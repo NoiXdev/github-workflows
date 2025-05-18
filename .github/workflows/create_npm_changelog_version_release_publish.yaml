@@ -25,6 +25,7 @@ jobs:
           skip-commit: true
           skip-tag: true
           skip-on-empty: true
+          skip-version-file: true
           output-file: ./CHANGELOG.md
 
       - name: "NPM: Install"
@@ -35,11 +36,18 @@ jobs:
         if: ${{ steps.changelog.outputs.tag }}
         run: npm run build
 
+      - name: "NPM: version"
+        if: ${{ steps.changelog.outputs.tag }}
+        run: npm version ${{ steps.changelog.outputs.version }}
+
       - name: "commit changes and add tag"
         uses: EndBug/add-and-commit@v9
         if: ${{ steps.changelog.outputs.tag }}
         with:
-          add: 'CHANGELOG.md package-lock.json package.json'
+          add: |
+            - CHANGELOG.md
+            - package.json
+            - package-lock.json
           tag: ${{ steps.changelog.outputs.tag }}
           message: "chore(release): ${{ steps.changelog.outputs.tag }} [skip ci]"
           push: true
