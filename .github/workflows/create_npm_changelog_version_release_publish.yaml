@@ -16,19 +16,33 @@ jobs:
           node-version: '22'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: "NPM: Install"
-        run: npm ci
-
-      - name: "NPM: build"
-        run: npm run build
-
       - name: Generate changelog and calculate version number
         id: changelog
         uses: TriPSs/conventional-changelog-action@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           version-file: ./package.json
+          skip-commit: true
+          skip-tag: true
           skip-on-empty: true
+          output-file: ./CHANGELOG.md
+
+      - name: "NPM: Install"
+        if: ${{ steps.changelog.outputs.tag }}
+        run: npm ci
+
+      - name: "NPM: build"
+        if: ${{ steps.changelog.outputs.tag }}
+        run: npm run build
+
+      - name: "commit changes and add tag"
+        uses: EndBug/add-and-commit@v9
+        if: ${{ steps.changelog.outputs.tag }}
+        with:
+          add: 'CHANGELOG.md package-lock.json package.json'
+          tag: ${{ steps.changelog.outputs.tag }}
+          message: "chore(release): ${{ steps.changelog.outputs.tag }} [skip ci]"
+          push: true
 
       - name: Create release
         id: release
@@ -40,7 +54,7 @@ jobs:
           name: ${{ steps.changelog.outputs.tag }}
           body: ${{ steps.changelog.outputs.clean_changelog }}
 
-      - name: Publish to npm
+      - name: "NPM: publish"
         if: ${{ steps.changelog.outputs.tag }}
         run: npm publish
         env:
