@@ -1,0 +1,29 @@
+name: Create Compose Changelog + Version + Release
+on:
+  workflow_call:
+
+jobs:
+  release:
+    name: Create Compose Changelog + Version + Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Generate changelog and calculate version number
+        id: changelog
+        uses: TriPSs/conventional-changelog-action@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version-file: ./composer.json # Change this to any other yaml or json file to store/bump the latest version in it
+          skip-on-empty: false
+
+      - name: Create release
+        id: release
+        if: ${{ steps.changelog.outputs.tag }}
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.github_token }}
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
