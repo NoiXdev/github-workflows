@@ -38,7 +38,7 @@ jobs:
 
       - name: "NPM: version"
         if: ${{ steps.changelog.outputs.tag }}
-        run: npm version ${{ steps.changelog.outputs.version }}
+        run: npm version ${{ steps.changelog.outputs.version }} --no-commit-hooks --no-git-tag-version
 
       - name: "commit changes and add tag"
         uses: EndBug/add-and-commit@v9
