@@ -1,0 +1,47 @@
+name: Create NPM Changelog + Version + Release + Publish
+on:
+  workflow_call:
+
+jobs:
+  release:
+    name: Create NPM Changelog + Version + Release + Publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: "NPM: Install"
+        run: npm ci
+
+      - name: "NPM: build"
+        run: npm run build
+
+      - name: Generate changelog and calculate version number
+        id: changelog
+        uses: TriPSs/conventional-changelog-action@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          version-file: ./package.json
+          skip-on-empty: true
+
+      - name: Create release
+        id: release
+        if: ${{ steps.changelog.outputs.tag }}
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.github_token }}
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+
+      - name: Publish to npm
+        if: ${{ steps.changelog.outputs.tag }}
+        run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
