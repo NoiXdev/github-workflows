@@ -1,0 +1,276 @@
+name: Create Tauri Changelog + Version + Release
+
+# Reusable, dispatch-driven release for Tauri desktop apps. The caller picks a
+# bump (patch/minor/major); this workflow computes the next version, sets it
+# everywhere, generates the changelog, commits + tags on main, and builds and
+# uploads signed artifacts for macOS (universal), Windows and Linux.
+#
+# macOS: pass `macos_build_script` to run a repo-provided build script (e.g. one
+# that embeds and inside-out-signs a WidgetKit extension). Left empty, macOS
+# falls back to tauri-action like Windows/Linux.
+#
+# Pass `secrets: inherit` from the caller so the Apple signing secrets
+# (MACOS_CERTIFICATE, MACOS_CERTIFICATE_PASSWORD, APPLE_API_KEY,
+# APPLE_API_KEY_ID, APPLE_API_ISSUER) are available. When they are absent the
+# macOS build is produced unsigned.
+
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: "Version bump: patch, minor or major"
+        required: true
+        type: string
+      prerelease:
+        description: "Mark the GitHub release as a pre-release"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build everything but skip commit, tag, release and uploads"
+        type: boolean
+        default: false
+      node_version:
+        type: string
+        default: "22"
+      tauri_dir:
+        description: "Path to the Tauri crate directory"
+        type: string
+        default: src-tauri
+      macos_build_script:
+        description: >
+          Optional path to a repo script that builds/signs/notarizes the macOS
+          bundle and prints a line `DMG=<path>`. Empty => macOS uses tauri-action.
+        type: string
+        default: ""
+
+permissions:
+  contents: write
+
+jobs:
+  prepare:
+    name: Prepare version & release
+    runs-on: ubuntu-latest
+    outputs:
+      next: ${{ steps.ver.outputs.next }}
+      tag: ${{ steps.ver.outputs.tag }}
+      release_id: ${{ steps.release.outputs.id }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          ref: main
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - name: Compute next version
+        id: ver
+        uses: NoiXdev/github-workflows/actions/compute-version@main
+        with:
+          bump: ${{ inputs.bump }}
+
+      - name: Set version across all files
+        uses: NoiXdev/github-workflows/actions/set-tauri-version@main
+        with:
+          version: ${{ steps.ver.outputs.next }}
+          tauri-dir: ${{ inputs.tauri_dir }}
+
+      - name: Install dependencies (for changelog)
+        run: npm ci --ignore-scripts
+
+      - name: Generate CHANGELOG.md
+        id: changelog
+        # Text only: the version is owned by set-tauri-version above, so every
+        # skip-* is on to stop this action from bumping/committing/tagging.
+        uses: TriPSs/conventional-changelog-action@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          preset: conventionalcommits
+          tag-prefix: "v"
+          output-file: CHANGELOG.md
+          release-count: 0
+          skip-commit: "true"
+          skip-tag: "true"
+          skip-bump: "true"
+          skip-version-file: "true"
+          skip-on-empty: "false"
+
+      - name: Commit bump + CHANGELOG and tag
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GIT_AUTHOR_NAME: noix-dev-bot
+          GIT_AUTHOR_EMAIL: noix-dev-bot@noix.dev
+          GIT_COMMITTER_NAME: noix-dev-bot
+          GIT_COMMITTER_EMAIL: noix-dev-bot@noix.dev
+        run: |
+          set -euo pipefail
+          git add package.json package-lock.json CHANGELOG.md \
+            "${{ inputs.tauri_dir }}/tauri.conf.json" \
+            "${{ inputs.tauri_dir }}/Cargo.toml" \
+            "${{ inputs.tauri_dir }}/Cargo.lock"
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+          else
+            git commit -m "chore(release): ${{ steps.ver.outputs.tag }} [skip ci]"
+            git push origin HEAD:main
+          fi
+          git tag -a "${{ steps.ver.outputs.tag }}" -m "${{ steps.ver.outputs.tag }}"
+          git push origin "${{ steps.ver.outputs.tag }}"
+
+      - name: Create GitHub Release
+        id: release
+        if: ${{ inputs.dry_run == false }}
+        uses: softprops/action-gh-release@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+          prerelease: ${{ inputs.prerelease }}
+
+  build:
+    name: Build ${{ matrix.name }}
+    needs: prepare
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows x64
+            os: windows-latest
+          - name: Linux x64
+            os: ubuntu-22.04
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.tauri_dir }}
+
+      - name: Install Tauri system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev \
+            libgtk-3-dev libssl-dev libxdo-dev patchelf build-essential file
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set version to release version
+        uses: NoiXdev/github-workflows/actions/set-tauri-version@main
+        with:
+          version: ${{ needs.prepare.outputs.next }}
+          tauri-dir: ${{ inputs.tauri_dir }}
+
+      - name: Build & upload
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          # Empty releaseId on a dry run => tauri-action builds but uploads nothing.
+          releaseId: ${{ inputs.dry_run == false && needs.prepare.outputs.release_id || '' }}
+
+  build-macos:
+    name: Build macOS (Universal)
+    needs: prepare
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,x86_64-apple-darwin
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.tauri_dir }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Set version to release version
+        uses: NoiXdev/github-workflows/actions/set-tauri-version@main
+        with:
+          version: ${{ needs.prepare.outputs.next }}
+          tauri-dir: ${{ inputs.tauri_dir }}
+
+      - name: Set up code signing
+        # Import the Developer ID cert into a dedicated keychain, derive the
+        # signing identity, and stage the notarization key. Skipped when the
+        # signing secrets are absent; the build is then produced unsigned.
+        if: ${{ env.MACOS_CERTIFICATE != '' }}
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          APPLE_API_KEY_B64: ${{ secrets.APPLE_API_KEY }}
+        run: |
+          set -euo pipefail
+          CERT_PATH="$RUNNER_TEMP/cert.p12"
+          KEYCHAIN="$RUNNER_TEMP/signing.keychain-db"
+          KEYCHAIN_PWD="$(openssl rand -base64 24)"
+          echo "$MACOS_CERTIFICATE" | base64 --decode > "$CERT_PATH"
+          security create-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security set-keychain-settings -lut 21600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PWD" "$KEYCHAIN"
+          security import "$CERT_PATH" -k "$KEYCHAIN" -P "$MACOS_CERTIFICATE_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: -k "$KEYCHAIN_PWD" "$KEYCHAIN" >/dev/null
+          security list-keychains -d user -s "$KEYCHAIN" $(security list-keychains -d user | sed s/\"//g)
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN" | awk -F'"' '/Developer ID Application/{print $2; exit}')
+          echo "APPLE_SIGNING_IDENTITY=$IDENTITY" >> "$GITHUB_ENV"
+          KEY_PATH="$RUNNER_TEMP/apple_api_key.p8"
+          echo "$APPLE_API_KEY_B64" | base64 --decode > "$KEY_PATH"
+          echo "APPLE_API_KEY_PATH=$KEY_PATH" >> "$GITHUB_ENV"
+          rm -f "$CERT_PATH"
+
+      - name: Build via repo script (embeds/signs/notarizes)
+        id: macbuild
+        if: ${{ inputs.macos_build_script != '' }}
+        env:
+          VERSION: ${{ needs.prepare.outputs.next }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+        run: |
+          set -euo pipefail
+          out="$(bash "${{ inputs.macos_build_script }}" | tee /dev/stderr)"
+          echo "dmg=$(printf '%s\n' "$out" | grep '^DMG=' | tail -1 | cut -d= -f2-)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload macOS artifact from repo script
+        if: ${{ inputs.macos_build_script != '' && inputs.dry_run == false }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release upload "${{ needs.prepare.outputs.tag }}" "${{ steps.macbuild.outputs.dmg }}" \
+            --clobber --repo "${{ github.repository }}"
+
+      - name: Build & upload via tauri-action (fallback)
+        if: ${{ inputs.macos_build_script == '' }}
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          APPLE_SIGNING_IDENTITY: ${{ env.APPLE_SIGNING_IDENTITY }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
+          APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
+        with:
+          releaseId: ${{ inputs.dry_run == false && needs.prepare.outputs.release_id || '' }}
+          args: --target universal-apple-darwin
+
+      - name: Clean up notarization key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/apple_api_key.p8"
