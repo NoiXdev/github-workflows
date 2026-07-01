@@ -1,0 +1,52 @@
+name: Compute next version
+description: >
+  Compute the next semantic version from a bump type (patch/minor/major) and the
+  current version in package.json, and fail early if the resulting tag already
+  exists. Requires a prior checkout (with tags) and Node.js on PATH.
+
+inputs:
+  bump:
+    description: "Bump type: patch, minor or major"
+    required: true
+  version-file:
+    description: "JSON file holding the current version"
+    required: false
+    default: package.json
+
+outputs:
+  current:
+    description: "The current version, before bumping"
+    value: ${{ steps.compute.outputs.current }}
+  next:
+    description: "The computed next version (no leading v)"
+    value: ${{ steps.compute.outputs.next }}
+  tag:
+    description: "The release tag for the next version (v-prefixed)"
+    value: ${{ steps.compute.outputs.tag }}
+
+runs:
+  using: composite
+  steps:
+    - id: compute
+      shell: bash
+      run: |
+        set -euo pipefail
+        current=$(node -p "require('./${{ inputs.version-file }}').version")
+        IFS='.' read -r major minor patch <<< "$current"
+        case "${{ inputs.bump }}" in
+          major) next="$((major + 1)).0.0" ;;
+          minor) next="${major}.$((minor + 1)).0" ;;
+          patch) next="${major}.${minor}.$((patch + 1))" ;;
+          *) echo "::error::Unknown bump type '${{ inputs.bump }}' (expected patch, minor or major)"; exit 1 ;;
+        esac
+        tag="v${next}"
+        if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
+          echo "::error::Tag ${tag} already exists — pick a different bump."
+          exit 1
+        fi
+        {
+          echo "current=${current}"
+          echo "next=${next}"
+          echo "tag=${tag}"
+        } >> "$GITHUB_OUTPUT"
+        echo "::notice::Bumping ${current} -> ${next} (${tag})"

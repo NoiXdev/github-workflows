@@ -1,0 +1,41 @@
+name: Set Tauri project version
+description: >
+  Set the project version in every file a Tauri app carries it in, so a release
+  is fully driven by one version number: package.json (+ package-lock.json),
+  <tauri-dir>/tauri.conf.json, and the [package] version in <tauri-dir>/Cargo.toml
+  (+ its entry in Cargo.lock). Uses only Node/npm/Perl — no Rust toolchain needed.
+  Dependency versions are left untouched.
+
+inputs:
+  version:
+    description: "The version to set (no leading v), e.g. 1.2.3"
+    required: true
+  tauri-dir:
+    description: "Path to the Tauri crate directory (holding Cargo.toml / tauri.conf.json)"
+    required: false
+    default: src-tauri
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        V: ${{ inputs.version }}
+        DIR: ${{ inputs.tauri-dir }}
+      run: |
+        set -euo pipefail
+
+        # package.json + package-lock.json
+        npm version "$V" --no-git-tag-version --allow-same-version >/dev/null
+
+        # tauri.conf.json (drives the app + Windows/Linux artifact version)
+        node -e "const fs=require('fs');const f=process.env.DIR+'/tauri.conf.json';const c=JSON.parse(fs.readFileSync(f,'utf8'));c.version=process.env.V;fs.writeFileSync(f,JSON.stringify(c,null,2)+'\n')"
+
+        # Cargo.toml — only the [package] version, not dependency versions.
+        perl -0pi -e 's/(\[package\][^\[]*?\nversion = ")[^"]*(")/$1$ENV{V}$2/s' "$DIR/Cargo.toml"
+
+        # Cargo.lock — the local crate's entry (matched by its package name).
+        NAME=$(perl -0ne 'print $1 if /\[package\][^\[]*?\nname = "([^"]+)"/s' "$DIR/Cargo.toml")
+        NAME="$NAME" perl -0pi -e 's/(name = "\Q$ENV{NAME}\E"\nversion = ")[^"]*(")/$1$ENV{V}$2/' "$DIR/Cargo.lock"
+
+        echo "::notice::Set version to $V across package.json, $DIR/tauri.conf.json, $DIR/Cargo.toml and Cargo.lock"

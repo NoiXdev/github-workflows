@@ -1,0 +1,47 @@
+name: Release
+run-name: Release ${{ inputs.bump }} for ${{ github.event.repository.name }}
+
+# Dispatch-driven release for a Tauri desktop app. Run it from the Actions tab,
+# pick patch / minor / major, and the reusable workflow handles the rest:
+# version bump across all files, changelog, commit + tag on main, and signed
+# builds for macOS (universal), Windows and Linux uploaded to the release.
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      prerelease:
+        description: "Mark as a pre-release"
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build everything but skip commit, tag, release and uploads"
+        type: boolean
+        default: false
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    uses: NoiXdev/github-workflows/.github/workflows/create_tauri_changelog_version_release.yaml@main
+    secrets: inherit
+    with:
+      bump: ${{ inputs.bump }}
+      prerelease: ${{ inputs.prerelease }}
+      dry_run: ${{ inputs.dry_run }}
+      # Optional: a repo script that builds/signs/notarizes the macOS bundle and
+      # prints `DMG=<path>` (e.g. one that embeds a WidgetKit extension). Remove
+      # this line to build macOS with tauri-action like Windows/Linux.
+      macos_build_script: scripts/macos-release.sh
