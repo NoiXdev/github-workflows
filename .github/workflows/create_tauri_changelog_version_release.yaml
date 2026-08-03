@@ -42,6 +42,10 @@ on:
           bundle and prints a line `DMG=<path>`. Empty => macOS uses tauri-action.
         type: string
         default: ""
+    outputs:
+      tag:
+        description: "The created release tag (e.g. v0.5.0)"
+        value: ${{ jobs.prepare.outputs.tag }}
 
 permissions:
   contents: write

@@ -2,11 +2,14 @@ name: Build Tauri Android APK
 
 # Reusable APK build for Tauri mobile apps. Builds a debug-signed (installable,
 # no signing secrets required) APK for one ABI, uploads it as a workflow
-# artifact, and — when the caller was triggered by a published GitHub release —
-# attaches the APK to that release. Does NOT publish to any app store.
+# artifact, and — when `release_tag` is given (or the caller was triggered by a
+# published release) — attaches the APK to that release. Does NOT publish to any
+# app store.
 #
-# The caller repo must have run `tauri android init` and committed its
-# src-tauri/gen/android project. Pass `secrets: inherit` from the caller.
+# Chain it after a release job and pass `release_tag` so it reliably attaches
+# even when the release was created by GITHUB_TOKEN (which does not fire the
+# `release: published` event). The caller repo must have committed its
+# `tauri android init` output (src-tauri/gen/android). Pass `secrets: inherit`.
 
 on:
   workflow_call:
@@ -30,6 +33,10 @@ on:
         description: "Path to the Tauri crate directory"
         type: string
         default: src-tauri
+      release_tag:
+        description: "If set, build that tag and attach the APK to its release"
+        type: string
+        default: ""
 
 permissions:
   contents: write
@@ -40,6 +47,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Build the release tag when attaching to a release, otherwise the
+          # triggering commit. (Empty ref would default to the triggering ref.)
+          ref: ${{ inputs.release_tag || github.sha }}
 
       - uses: actions/setup-node@v4
         with:
@@ -81,7 +92,7 @@ jobs:
         id: stage
         run: |
           mkdir -p dist
-          ref="${{ github.event.release.tag_name || github.sha }}"
+          ref="${{ inputs.release_tag || github.event.release.tag_name || github.sha }}"
           name="${{ github.event.repository.name }}-${ref}-android-${{ inputs.target }}-debug.apk"
           src="$(find "${{ inputs.tauri_dir }}/gen/android/app/build/outputs/apk" -name '*-debug.apk' | head -1)"
           cp "$src" "dist/$name"
@@ -94,8 +105,8 @@ jobs:
           path: ${{ steps.stage.outputs.path }}
 
       - name: Attach APK to release
-        if: github.event_name == 'release'
+        if: ${{ inputs.release_tag != '' || github.event_name == 'release' }}
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.release.tag_name }}
+          tag_name: ${{ inputs.release_tag != '' && inputs.release_tag || github.event.release.tag_name }}
           files: ${{ steps.stage.outputs.path }}
