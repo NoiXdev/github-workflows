@@ -1,0 +1,101 @@
+name: Build Tauri Android APK
+
+# Reusable APK build for Tauri mobile apps. Builds a debug-signed (installable,
+# no signing secrets required) APK for one ABI, uploads it as a workflow
+# artifact, and — when the caller was triggered by a published GitHub release —
+# attaches the APK to that release. Does NOT publish to any app store.
+#
+# The caller repo must have run `tauri android init` and committed its
+# src-tauri/gen/android project. Pass `secrets: inherit` from the caller.
+
+on:
+  workflow_call:
+    inputs:
+      node_version:
+        type: string
+        default: "22"
+      ndk_version:
+        description: "Android NDK version to install"
+        type: string
+        default: "26.1.10909125"
+      target:
+        description: "Tauri Android ABI short name: aarch64, armv7, i686 or x86_64"
+        type: string
+        default: aarch64
+      rust_target:
+        description: "Rust target triple matching `target`"
+        type: string
+        default: aarch64-linux-android
+      tauri_dir:
+        description: "Path to the Tauri crate directory"
+        type: string
+        default: src-tauri
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    name: Build debug APK (${{ inputs.target }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages (platform, build-tools, NDK)
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0" "ndk;${{ inputs.ndk_version }}"
+
+      - name: Install Rust toolchain + Android target
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ inputs.rust_target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.tauri_dir }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build debug APK
+        run: |
+          export NDK_HOME="$ANDROID_SDK_ROOT/ndk/${{ inputs.ndk_version }}"
+          npx tauri android build --debug --apk --target ${{ inputs.target }}
+
+      - name: Stage APK
+        id: stage
+        run: |
+          mkdir -p dist
+          ref="${{ github.event.release.tag_name || github.sha }}"
+          name="${{ github.event.repository.name }}-${ref}-android-${{ inputs.target }}-debug.apk"
+          src="$(find "${{ inputs.tauri_dir }}/gen/android/app/build/outputs/apk" -name '*-debug.apk' | head -1)"
+          cp "$src" "dist/$name"
+          echo "path=dist/$name" >> "$GITHUB_OUTPUT"
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-apk-${{ inputs.target }}
+          path: ${{ steps.stage.outputs.path }}
+
+      - name: Attach APK to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.event.release.tag_name }}
+          files: ${{ steps.stage.outputs.path }}
