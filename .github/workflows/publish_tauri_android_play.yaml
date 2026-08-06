@@ -1,0 +1,145 @@
+name: Publish Tauri Android to Google Play
+
+# Reusable release-AAB build + Google Play upload for Tauri mobile apps.
+# Builds a universal, upload-key-signed Android App Bundle and publishes it to
+# the given Play track via the Google Play Developer API.
+#
+# Prerequisites in the CALLER repo:
+#   - committed `tauri android init` output (src-tauri/gen/android) whose
+#     app/build.gradle.kts has a signingConfigs.release that reads
+#     gen/android/keystore.properties (keys: storeFile, keyAlias, password)
+#   - the app already has at least one MANUAL release in Play (the Developer
+#     API cannot create the very first release of an app)
+#   - the app version is bumped so versionCode strictly increases each upload
+# Pass `secrets: inherit`. Chain after the release job and pass `release_tag`
+# so it reliably builds the tagged commit even when the release was created by
+# GITHUB_TOKEN (which does not fire the `release: published` event).
+
+on:
+  workflow_call:
+    inputs:
+      package_name:
+        description: "Android applicationId / Play package name"
+        type: string
+        required: true
+      track:
+        description: "Play track: internal | alpha | beta | production"
+        type: string
+        default: production
+      status:
+        description: "Release status: completed | inProgress | draft | halted"
+        type: string
+        default: completed
+      user_fraction:
+        description: "Staged-rollout fraction for status=inProgress (e.g. 0.1)"
+        type: string
+        default: ""
+      node_version:
+        type: string
+        default: "22"
+      ndk_version:
+        description: "Android NDK version to install"
+        type: string
+        default: "27.2.12479018"
+      tauri_dir:
+        description: "Path to the Tauri crate directory"
+        type: string
+        default: src-tauri
+      release_tag:
+        description: "Tag to check out and build (empty = triggering sha)"
+        type: string
+        default: ""
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        description: "base64 of the upload keystore (.jks)"
+        required: true
+      ANDROID_KEYSTORE_PASSWORD:
+        description: "Keystore/key password"
+        required: true
+      ANDROID_KEY_ALIAS:
+        description: "Key alias inside the keystore"
+        required: true
+      PLAY_SERVICE_ACCOUNT_JSON:
+        description: "Google Play service-account JSON key"
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  play:
+    name: Publish AAB to Play (${{ inputs.track }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Build the tagged release commit when chained after a release,
+          # otherwise the triggering commit.
+          ref: ${{ inputs.release_tag || github.sha }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ inputs.node_version }}
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install SDK packages (platform 36, build-tools, NDK)
+        run: |
+          yes | sdkmanager --licenses > /dev/null || true
+          sdkmanager "platform-tools" "platforms;android-36" "build-tools;36.0.0" "ndk;${{ inputs.ndk_version }}"
+
+      - name: Install Rust toolchain + Android targets
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android,armv7-linux-androideabi,i686-linux-android,x86_64-linux-android
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: ${{ inputs.tauri_dir }}
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Decode upload keystore + write keystore.properties
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KS_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+        run: |
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          printf 'storeFile=%s\nkeyAlias=%s\npassword=%s\n' \
+            "$RUNNER_TEMP/upload.jks" "$KS_ALIAS" "$KS_PASS" \
+            > "${{ inputs.tauri_dir }}/gen/android/keystore.properties"
+
+      - name: Build signed release AAB (universal)
+        run: |
+          export NDK_HOME="$ANDROID_SDK_ROOT/ndk/${{ inputs.ndk_version }}"
+          npx tauri android build --aab
+
+      - name: Locate AAB + mapping
+        id: find
+        run: |
+          aab="$(find "${{ inputs.tauri_dir }}/gen/android/app/build/outputs/bundle" -name '*-release.aab' | head -1)"
+          [ -n "$aab" ] || { echo "No release AAB found"; exit 1; }
+          echo "aab=$aab" >> "$GITHUB_OUTPUT"
+          map="$(find "${{ inputs.tauri_dir }}/gen/android/app/build/outputs/mapping" -name 'mapping.txt' | head -1 || true)"
+          echo "mapping=$map" >> "$GITHUB_OUTPUT"
+
+      - name: Upload to Google Play
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: ${{ inputs.package_name }}
+          releaseFiles: ${{ steps.find.outputs.aab }}
+          mappingFile: ${{ steps.find.outputs.mapping }}
+          track: ${{ inputs.track }}
+          status: ${{ inputs.status }}
+          userFraction: ${{ inputs.user_fraction }}
