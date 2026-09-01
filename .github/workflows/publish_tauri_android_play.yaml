@@ -1,8 +1,11 @@
 name: Publish Tauri Android to Google Play
 
-# Reusable release-AAB build + Google Play upload for Tauri mobile apps.
-# Builds a universal, upload-key-signed Android App Bundle and publishes it to
-# the given Play track via the Google Play Developer API.
+# Reusable release-Android build + Google Play upload for Tauri mobile apps.
+# Builds a universal, upload-key-signed Android App Bundle (AAB) AND a matching
+# signed release APK, publishes the AAB to the given Play track via the Google
+# Play Developer API, and — when a `release_tag` is given — attaches the signed
+# APK to that GitHub release (the AAB is a Play-only format and is intentionally
+# not attached, being non-installable).
 #
 # Prerequisites in the CALLER repo:
 #   - committed `tauri android init` output (src-tauri/gen/android) whose
@@ -12,7 +15,7 @@ name: Publish Tauri Android to Google Play
 #     API cannot create the very first release of an app)
 #   - the app version is bumped so versionCode strictly increases each upload
 # Pass `secrets: inherit`. Chain after the release job and pass `release_tag`
-# so it reliably builds the tagged commit even when the release was created by
+# so it builds the tagged commit even when the release was created by
 # GITHUB_TOKEN (which does not fire the `release: published` event).
 
 on:
@@ -46,7 +49,7 @@ on:
         type: string
         default: src-tauri
       release_tag:
-        description: "Tag to check out and build (empty = triggering sha)"
+        description: "Tag to check out and build; also the release to attach the APK to (empty = triggering sha, no attach)"
         type: string
         default: ""
     secrets:
@@ -64,7 +67,7 @@ on:
         required: true
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   play:
@@ -119,21 +122,30 @@ jobs:
             "$RUNNER_TEMP/upload.jks" "$KS_ALIAS" "$KS_PASS" \
             > "${{ inputs.tauri_dir }}/gen/android/keystore.properties"
 
-      - name: Build signed release AAB (universal)
+      - name: Build signed release AAB + APK (universal)
         run: |
           export NDK_HOME="$ANDROID_SDK_ROOT/ndk/${{ inputs.ndk_version }}"
-          npx tauri android build --aab
+          npx tauri android build --apk --aab
 
-      - name: Locate AAB + mapping
+      - name: Locate + stage AAB, APK, mapping
         id: find
         run: |
-          aab="$(find "${{ inputs.tauri_dir }}/gen/android/app/build/outputs/bundle" -name '*-release.aab' | head -1)"
+          out="${{ inputs.tauri_dir }}/gen/android/app/build/outputs"
+          aab="$(find "$out/bundle" -name '*-release.aab' | head -1)"
           [ -n "$aab" ] || { echo "No release AAB found"; exit 1; }
           echo "aab=$aab" >> "$GITHUB_OUTPUT"
-          map="$(find "${{ inputs.tauri_dir }}/gen/android/app/build/outputs/mapping" -name 'mapping.txt' | head -1 || true)"
+          map="$(find "$out/mapping" -name 'mapping.txt' | head -1 || true)"
           echo "mapping=$map" >> "$GITHUB_OUTPUT"
+          apk_src="$(find "$out/apk" -name '*-release.apk' | head -1)"
+          if [ -n "$apk_src" ]; then
+            mkdir -p dist
+            ref="${{ inputs.release_tag || github.sha }}"
+            apk="dist/${{ github.event.repository.name }}-${ref}-android-universal-release.apk"
+            cp "$apk_src" "$apk"
+            echo "apk=$apk" >> "$GITHUB_OUTPUT"
+          fi
 
-      - name: Upload to Google Play
+      - name: Upload AAB to Google Play
         uses: r0adkll/upload-google-play@v1
         with:
           serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
@@ -143,3 +155,10 @@ jobs:
           track: ${{ inputs.track }}
           status: ${{ inputs.status }}
           userFraction: ${{ inputs.user_fraction }}
+
+      - name: Attach signed APK to release
+        if: ${{ inputs.release_tag != '' && steps.find.outputs.apk != '' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: ${{ steps.find.outputs.apk }}
