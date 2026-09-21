@@ -1,13 +1,20 @@
 name: Compute next version
 description: >
-  Compute the next semantic version from a bump type (patch/minor/major) and the
-  current version in package.json, and fail early if the resulting tag already
-  exists. Requires a prior checkout (with tags) and Node.js on PATH.
+  Compute the next semantic version from a bump type (patch/minor/major), an
+  optional prerelease identifier, and the current version in package.json, and
+  fail early if the resulting tag already exists. Requires a prior checkout
+  (with tags) and Node.js on PATH.
 
 inputs:
   bump:
     description: "Bump type: patch, minor or major"
     required: true
+  prerelease:
+    description: >
+      Prerelease identifier (alpha, beta, rc, ...). Empty for a final release,
+      which is the default and the behaviour every existing caller gets.
+    required: false
+    default: ""
   version-file:
     description: "JSON file holding the current version"
     required: false
@@ -23,30 +30,91 @@ outputs:
   tag:
     description: "The release tag for the next version (v-prefixed)"
     value: ${{ steps.compute.outputs.tag }}
+  is-prerelease:
+    description: >
+      "true" when the computed version carries a prerelease part. Derived from
+      the version rather than taken as a separate flag, so the GitHub release's
+      prerelease marking cannot disagree with the version it carries.
+    value: ${{ steps.compute.outputs.is_prerelease }}
 
 runs:
   using: composite
   steps:
     - id: compute
       shell: bash
+      # Inputs arrive as environment variables rather than being interpolated
+      # into the script text. `${{ }}` is substituted before bash sees the
+      # line, so a value containing a quote would otherwise break out of it —
+      # and this action runs for every product in the organisation.
+      env:
+        BUMP: ${{ inputs.bump }}
+        PRE: ${{ inputs.prerelease }}
+        VERSION_FILE: ${{ inputs.version-file }}
       run: |
         set -euo pipefail
-        current=$(node -p "require('./${{ inputs.version-file }}').version")
-        IFS='.' read -r major minor patch <<< "$current"
-        case "${{ inputs.bump }}" in
-          major) next="$((major + 1)).0.0" ;;
-          minor) next="${major}.$((minor + 1)).0" ;;
-          patch) next="${major}.${minor}.$((patch + 1))" ;;
-          *) echo "::error::Unknown bump type '${{ inputs.bump }}' (expected patch, minor or major)"; exit 1 ;;
-        esac
+        current=$(node -p "require('./' + process.env.VERSION_FILE).version")
+        pre="$PRE"
+
+        # Parsed rather than split on dots: `1.0.0-beta.1` split that way gives
+        # a patch of `0-beta`, and the arithmetic below would fail on it.
+        re='^([0-9]+)\.([0-9]+)\.([0-9]+)(-([0-9A-Za-z]+)\.([0-9]+))?$'
+        if [[ ! "$current" =~ $re ]]; then
+          echo "::error::Cannot read '${current}' as a version (expected 1.2.3 or 1.2.3-beta.4)"
+          exit 1
+        fi
+        major="${BASH_REMATCH[1]}"; minor="${BASH_REMATCH[2]}"; patch="${BASH_REMATCH[3]}"
+        cur_id="${BASH_REMATCH[5]}"; cur_num="${BASH_REMATCH[6]}"
+        base="${major}.${minor}.${patch}"
+
+        if [ -n "$pre" ] && [[ ! "$pre" =~ ^[0-9A-Za-z]+$ ]]; then
+          echo "::error::Prerelease identifier '${pre}' may only contain letters and digits"
+          exit 1
+        fi
+
+        bumped() {
+          case "$BUMP" in
+            major) echo "$((major + 1)).0.0" ;;
+            minor) echo "${major}.$((minor + 1)).0" ;;
+            patch) echo "${major}.${minor}.$((patch + 1))" ;;
+            *) echo "::error::Unknown bump type '${BUMP}' (expected patch, minor or major)" >&2; exit 1 ;;
+          esac
+        }
+
+        if [ -z "$pre" ]; then
+          if [ -n "$cur_id" ]; then
+            # Promotion: the version being prepared is already decided, so the
+            # bump is deliberately ignored — applying it would turn
+            # 1.1.0-beta.3 into 1.1.1 and skip the release being finished.
+            next="$base"
+            echo "::notice::Promoting prerelease ${current} to ${next}; bump '${BUMP}' ignored"
+          else
+            next="$(bumped)"
+          fi
+        elif [ -n "$cur_id" ]; then
+          if [ "$cur_id" = "$pre" ]; then
+            next="${base}-${pre}.$((cur_num + 1))"
+          else
+            # A stage change keeps the base: alpha, beta and rc are stages of
+            # the same upcoming version, not successive versions.
+            next="${base}-${pre}.1"
+          fi
+        else
+          next="$(bumped)-${pre}.1"
+        fi
+
         tag="v${next}"
         if git rev-parse "refs/tags/${tag}" >/dev/null 2>&1; then
           echo "::error::Tag ${tag} already exists — pick a different bump."
           exit 1
         fi
+
+        is_prerelease=false
+        [[ "$next" == *-* ]] && is_prerelease=true
+
         {
           echo "current=${current}"
           echo "next=${next}"
           echo "tag=${tag}"
+          echo "is_prerelease=${is_prerelease}"
         } >> "$GITHUB_OUTPUT"
-        echo "::notice::Bumping ${current} -> ${next} (${tag})"
+        echo "::notice::Bumping ${current} -> ${next} (${tag}, prerelease=${is_prerelease})"

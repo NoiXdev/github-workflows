@@ -22,9 +22,27 @@ on:
         required: true
         type: string
       prerelease:
-        description: "Mark the GitHub release as a pre-release"
+        description: >
+          Force the GitHub release to be marked as a pre-release. A version
+          carrying a prerelease part marks itself, so this is only needed to
+          flag an otherwise final version.
         type: boolean
         default: false
+      prerelease_id:
+        description: >
+          Prerelease identifier (alpha, beta, rc). Empty produces a final
+          version, which is what every existing caller gets. From 1.0.0 with
+          bump=minor and id=beta comes 1.1.0-beta.1; calling again with the
+          same id yields 1.1.0-beta.2; calling with an empty id promotes it to
+          1.1.0 and ignores the bump.
+        type: string
+        default: ""
+      platforms:
+        description: >
+          Which platforms to build, comma-separated: macos, windows, linux.
+          Defaults to all three, so callers that do not set it are unaffected.
+        type: string
+        default: "macos,windows,linux"
       dry_run:
         description: "Build everything but skip commit, tag, release and uploads"
         type: boolean
@@ -74,6 +92,7 @@ jobs:
         uses: NoiXdev/github-workflows/actions/compute-version@main
         with:
           bump: ${{ inputs.bump }}
+          prerelease: ${{ inputs.prerelease_id }}
 
       - name: Set version across all files
         uses: NoiXdev/github-workflows/actions/set-tauri-version@main
@@ -132,11 +151,15 @@ jobs:
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
           body: ${{ steps.changelog.outputs.clean_changelog }}
-          prerelease: ${{ inputs.prerelease }}
+          # Either the caller asked for it, or the version says so. Derived
+          # rather than trusted, so a release cannot be marked final while
+          # carrying a beta version.
+          prerelease: ${{ inputs.prerelease || steps.ver.outputs.is-prerelease == 'true' }}
 
   build:
     name: Build ${{ matrix.name }}
     needs: prepare
+    if: ${{ contains(inputs.platforms, 'windows') || contains(inputs.platforms, 'linux') }}
     strategy:
       fail-fast: false
       matrix:
@@ -188,6 +211,7 @@ jobs:
   build-macos:
     name: Build macOS (Universal)
     needs: prepare
+    if: ${{ contains(inputs.platforms, 'macos') }}
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@v4
@@ -278,3 +302,24 @@ jobs:
       - name: Clean up notarization key
         if: always()
         run: rm -f "$RUNNER_TEMP/apple_api_key.p8"
+
+  announce:
+    name: Announce the release
+    needs: [prepare, build, build-macos]
+    # `always()` so a skipped platform job does not suppress the notice, but
+    # only when a release was actually created.
+    if: ${{ always() && inputs.dry_run == false && needs.prepare.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        # The detour through `env` is the point: `if: secrets.X != ''` is not
+        # evaluated, so the check is made against an env value instead. A
+        # repository without a webhook skips this silently rather than failing.
+        if: env.WEBHOOK != ''
+        env:
+          WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
+        uses: SethCohen/github-releases-to-discord@v1
+        with:
+          webhook_url: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
+          color: "2105893"
+          username: "NoiX Releases"
