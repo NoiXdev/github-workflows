@@ -82,6 +82,12 @@ on:
           beside the Tauri crate; a workspace keeps a single lock at its root.
         type: string
         default: ""
+      product_name:
+        description: >
+          Name shown in the release notification. Empty uses the repository
+          name, which is the right answer for every product so far.
+        type: string
+        default: ""
       macos_build_script:
         description: >
           Optional path to a repo script that builds/signs/notarizes the macOS
@@ -375,6 +381,10 @@ jobs:
     # only when a release was actually created.
     if: ${{ always() && inputs.dry_run == false && needs.prepare.result == 'success' }}
     runs-on: ubuntu-latest
+    env:
+      # Every product posts into the same channel, so a message that names only
+      # a version does not say which software it belongs to.
+      PRODUCT: ${{ inputs.product_name != '' && inputs.product_name || github.event.repository.name }}
     steps:
       - name: Post to Discord
         # The detour through `env` is the point: `if: secrets.X != ''` is not
@@ -392,10 +402,11 @@ jobs:
         with:
           webhook_url: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
           color: "2105893"
-          username: "NoiX Releases"
+          username: ${{ env.PRODUCT }}
+          footer_title: NoiX Releases
           # The action reads github.event.release, which exists only on a
           # `release` trigger. This workflow is dispatched, so the three
           # fields are passed explicitly; without them it fails outright.
-          release_name: ${{ needs.prepare.outputs.tag }}
+          release_name: ${{ env.PRODUCT }} ${{ needs.prepare.outputs.tag }}
           release_body: ${{ needs.prepare.outputs.notes }}
           release_html_url: ${{ needs.prepare.outputs.release_url }}
