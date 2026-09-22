@@ -3,8 +3,10 @@ description: >
   Set the project version in every file a Tauri app carries it in, so a release
   is fully driven by one version number: package.json (+ package-lock.json),
   <tauri-dir>/tauri.conf.json, and the [package] version in <tauri-dir>/Cargo.toml
-  (+ its entry in Cargo.lock). Uses only Node/npm/Perl — no Rust toolchain needed.
-  Dependency versions are left untouched.
+  (+ its entry in Cargo.lock). `extra-crates` covers the rest of a Cargo
+  workspace, whose other members carry the same version and would otherwise be
+  left behind. Uses only Node/npm/Perl — no Rust toolchain needed. Dependency
+  versions are left untouched.
 
 inputs:
   version:
@@ -14,6 +16,21 @@ inputs:
     description: "Path to the Tauri crate directory (holding Cargo.toml / tauri.conf.json)"
     required: false
     default: src-tauri
+  extra-crates:
+    description: >
+      Further crate directories carrying the same version — the other members
+      of a Cargo workspace. Comma- or newline-separated. Empty by default,
+      which is what a single-crate project needs, so existing callers are
+      unaffected. A project that releases a workspace and leaves this empty
+      ships a library and a binary claiming different versions.
+    required: false
+    default: ""
+  cargo-lock:
+    description: >
+      Path to the Cargo.lock holding these crates. Defaults to the one beside
+      the Tauri crate; a workspace keeps a single lock file at its root.
+    required: false
+    default: ""
 
 runs:
   using: composite
@@ -22,6 +39,8 @@ runs:
       env:
         V: ${{ inputs.version }}
         DIR: ${{ inputs.tauri-dir }}
+        EXTRA: ${{ inputs.extra-crates }}
+        LOCK: ${{ inputs.cargo-lock }}
       run: |
         set -euo pipefail
 
@@ -31,11 +50,35 @@ runs:
         # tauri.conf.json (drives the app + Windows/Linux artifact version)
         node -e "const fs=require('fs');const f=process.env.DIR+'/tauri.conf.json';const c=JSON.parse(fs.readFileSync(f,'utf8'));c.version=process.env.V;fs.writeFileSync(f,JSON.stringify(c,null,2)+'\n')"
 
-        # Cargo.toml — only the [package] version, not dependency versions.
-        perl -0pi -e 's/(\[package\][^\[]*?\nversion = ")[^"]*(")/$1$ENV{V}$2/s' "$DIR/Cargo.toml"
+        lock="${LOCK:-$DIR/Cargo.lock}"
+        test -f "$lock" || { echo "::error::No Cargo.lock at $lock"; exit 1; }
 
-        # Cargo.lock — the local crate's entry (matched by its package name).
-        NAME=$(perl -0ne 'print $1 if /\[package\][^\[]*?\nname = "([^"]+)"/s' "$DIR/Cargo.toml")
-        NAME="$NAME" perl -0pi -e 's/(name = "\Q$ENV{NAME}\E"\nversion = ")[^"]*(")/$1$ENV{V}$2/' "$DIR/Cargo.lock"
+        # Every crate carrying this version: the Tauri crate, plus any
+        # workspace members the caller named. Split on commas and newlines so
+        # either style reads well in YAML.
+        crates=("$DIR")
+        while IFS= read -r line; do
+          [ -n "$line" ] && crates+=("$line")
+        done < <(printf '%s\n' "$EXTRA" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
-        echo "::notice::Set version to $V across package.json, $DIR/tauri.conf.json, $DIR/Cargo.toml and Cargo.lock"
+        for dir in "${crates[@]}"; do
+          manifest="$dir/Cargo.toml"
+          test -f "$manifest" || { echo "::error::No Cargo.toml at $manifest"; exit 1; }
+
+          # Only the [package] version, never a dependency's.
+          perl -0pi -e 's/(\[package\][^\[]*?\nversion = ")[^"]*(")/$1$ENV{V}$2/s' "$manifest"
+
+          # The lock entry, matched by the crate's own name. A crate missing
+          # from the lock is a mistake worth stopping for: the build would use
+          # a stale version and nobody would see it.
+          NAME=$(perl -0ne 'print $1 if /\[package\][^\[]*?\nname = "([^"]+)"/s' "$manifest")
+          test -n "$NAME" || { echo "::error::Cannot read a package name from $manifest"; exit 1; }
+          if ! grep -q "name = \"$NAME\"" "$lock"; then
+            echo "::error::$NAME is not in $lock"
+            exit 1
+          fi
+          NAME="$NAME" perl -0pi -e 's/(name = "\Q$ENV{NAME}\E"\nversion = ")[^"]*(")/$1$ENV{V}$2/' "$lock"
+          echo "  $manifest ($NAME)"
+        done
+
+        echo "::notice::Set version to $V across package.json, $DIR/tauri.conf.json, ${#crates[@]} crate(s) and $lock"

@@ -54,6 +54,20 @@ on:
         description: "Path to the Tauri crate directory"
         type: string
         default: src-tauri
+      extra_crates:
+        description: >
+          Further crate directories carrying the same version — the other
+          members of a Cargo workspace. Empty by default, so a single-crate
+          project is unaffected; a workspace that leaves it empty ships crates
+          claiming different versions.
+        type: string
+        default: ""
+      cargo_lock:
+        description: >
+          Path to the Cargo.lock holding those crates. Empty uses the one
+          beside the Tauri crate; a workspace keeps a single lock at its root.
+        type: string
+        default: ""
       macos_build_script:
         description: >
           Optional path to a repo script that builds/signs/notarizes the macOS
@@ -107,6 +121,8 @@ jobs:
         with:
           version: ${{ steps.ver.outputs.next }}
           tauri-dir: ${{ inputs.tauri_dir }}
+          extra-crates: ${{ inputs.extra_crates }}
+          cargo-lock: ${{ inputs.cargo_lock }}
 
       - name: Install dependencies (for changelog)
         run: npm ci --ignore-scripts
@@ -137,10 +153,10 @@ jobs:
           GIT_COMMITTER_EMAIL: noix-dev-bot@noix.dev
         run: |
           set -euo pipefail
-          git add package.json package-lock.json CHANGELOG.md \
-            "${{ inputs.tauri_dir }}/tauri.conf.json" \
-            "${{ inputs.tauri_dir }}/Cargo.toml" \
-            "${{ inputs.tauri_dir }}/Cargo.lock"
+          # -A rather than a fixed list: a workspace's other manifests and
+          # its root lock file are not at predictable paths, and a version
+          # written but left uncommitted is the worst of both outcomes.
+          git add -A
           if git diff --staged --quiet; then
             echo "Nothing to commit."
           else
@@ -207,6 +223,8 @@ jobs:
         with:
           version: ${{ needs.prepare.outputs.next }}
           tauri-dir: ${{ inputs.tauri_dir }}
+          extra-crates: ${{ inputs.extra_crates }}
+          cargo-lock: ${{ inputs.cargo_lock }}
 
       - name: Build & upload
         uses: tauri-apps/tauri-action@v0
@@ -245,6 +263,8 @@ jobs:
         with:
           version: ${{ needs.prepare.outputs.next }}
           tauri-dir: ${{ inputs.tauri_dir }}
+          extra-crates: ${{ inputs.extra_crates }}
+          cargo-lock: ${{ inputs.cargo_lock }}
 
       - name: Set up code signing
         # Import the Developer ID cert into a dedicated keychain, derive the
