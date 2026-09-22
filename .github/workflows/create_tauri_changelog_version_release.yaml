@@ -50,6 +50,13 @@ on:
       node_version:
         type: string
         default: "22"
+      app_dir:
+        description: >
+          Directory holding package.json and the frontend. Defaults to the
+          repository root; a Cargo workspace that keeps the Tauri app in a
+          subdirectory names it here.
+        type: string
+        default: "."
       tauri_dir:
         description: "Path to the Tauri crate directory"
         type: string
@@ -60,6 +67,13 @@ on:
           members of a Cargo workspace. Empty by default, so a single-crate
           project is unaffected; a workspace that leaves it empty ships crates
           claiming different versions.
+        type: string
+        default: ""
+      rust_workspace:
+        description: >
+          Directory Swatinem/rust-cache treats as the Cargo workspace. Empty
+          uses the Tauri crate directory, which is correct for a single-crate
+          project; a workspace points at its root, where Cargo.lock lives.
         type: string
         default: ""
       cargo_lock:
@@ -108,6 +122,7 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
           cache: npm
+          cache-dependency-path: ${{ inputs.app_dir }}/package-lock.json
 
       - name: Compute next version
         id: ver
@@ -120,12 +135,14 @@ jobs:
         uses: NoiXdev/github-workflows/actions/set-tauri-version@main
         with:
           version: ${{ steps.ver.outputs.next }}
+          app-dir: ${{ inputs.app_dir }}
           tauri-dir: ${{ inputs.tauri_dir }}
           extra-crates: ${{ inputs.extra_crates }}
           cargo-lock: ${{ inputs.cargo_lock }}
 
       - name: Install dependencies (for changelog)
         run: npm ci --ignore-scripts
+        working-directory: ${{ inputs.app_dir }}
 
       - name: Generate CHANGELOG.md
         id: changelog
@@ -200,12 +217,13 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
           cache: npm
+          cache-dependency-path: ${{ inputs.app_dir }}/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ inputs.tauri_dir }}
+          workspaces: ${{ inputs.rust_workspace || inputs.tauri_dir }}
 
       - name: Install Tauri system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -217,11 +235,13 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+        working-directory: ${{ inputs.app_dir }}
 
       - name: Set version to release version
         uses: NoiXdev/github-workflows/actions/set-tauri-version@main
         with:
           version: ${{ needs.prepare.outputs.next }}
+          app-dir: ${{ inputs.app_dir }}
           tauri-dir: ${{ inputs.tauri_dir }}
           extra-crates: ${{ inputs.extra_crates }}
           cargo-lock: ${{ inputs.cargo_lock }}
@@ -232,6 +252,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           # Empty releaseId on a dry run => tauri-action builds but uploads nothing.
+          projectPath: ${{ inputs.app_dir }}
           releaseId: ${{ inputs.dry_run == false && needs.prepare.outputs.release_id || '' }}
 
   build-macos:
@@ -246,6 +267,7 @@ jobs:
         with:
           node-version: ${{ inputs.node_version }}
           cache: npm
+          cache-dependency-path: ${{ inputs.app_dir }}/package-lock.json
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -253,15 +275,17 @@ jobs:
 
       - uses: Swatinem/rust-cache@v2
         with:
-          workspaces: ${{ inputs.tauri_dir }}
+          workspaces: ${{ inputs.rust_workspace || inputs.tauri_dir }}
 
       - name: Install dependencies
         run: npm ci
+        working-directory: ${{ inputs.app_dir }}
 
       - name: Set version to release version
         uses: NoiXdev/github-workflows/actions/set-tauri-version@main
         with:
           version: ${{ needs.prepare.outputs.next }}
+          app-dir: ${{ inputs.app_dir }}
           tauri-dir: ${{ inputs.tauri_dir }}
           extra-crates: ${{ inputs.extra_crates }}
           cargo-lock: ${{ inputs.cargo_lock }}
@@ -324,6 +348,7 @@ jobs:
           APPLE_API_KEY: ${{ secrets.APPLE_API_KEY_ID }}
           APPLE_API_KEY_PATH: ${{ env.APPLE_API_KEY_PATH }}
         with:
+          projectPath: ${{ inputs.app_dir }}
           releaseId: ${{ inputs.dry_run == false && needs.prepare.outputs.release_id || '' }}
           args: --target universal-apple-darwin
 

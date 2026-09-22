@@ -25,6 +25,13 @@ inputs:
       ships a library and a binary claiming different versions.
     required: false
     default: ""
+  app-dir:
+    description: >
+      Directory holding package.json. Defaults to the repository root, which
+      is where a plain Tauri project keeps it; a Cargo workspace that puts the
+      frontend in a subdirectory names it here.
+    required: false
+    default: "."
   cargo-lock:
     description: >
       Path to the Cargo.lock holding these crates. Defaults to the one beside
@@ -41,11 +48,13 @@ runs:
         DIR: ${{ inputs.tauri-dir }}
         EXTRA: ${{ inputs.extra-crates }}
         LOCK: ${{ inputs.cargo-lock }}
+        APP: ${{ inputs.app-dir }}
       run: |
         set -euo pipefail
 
         # package.json + package-lock.json
-        npm version "$V" --no-git-tag-version --allow-same-version >/dev/null
+        test -f "$APP/package.json" || { echo "::error::No package.json in $APP"; exit 1; }
+        (cd "$APP" && npm version "$V" --no-git-tag-version --allow-same-version >/dev/null)
 
         # tauri.conf.json (drives the app + Windows/Linux artifact version)
         node -e "const fs=require('fs');const f=process.env.DIR+'/tauri.conf.json';const c=JSON.parse(fs.readFileSync(f,'utf8'));c.version=process.env.V;fs.writeFileSync(f,JSON.stringify(c,null,2)+'\n')"
@@ -81,4 +90,4 @@ runs:
           echo "  $manifest ($NAME)"
         done
 
-        echo "::notice::Set version to $V across package.json, $DIR/tauri.conf.json, ${#crates[@]} crate(s) and $lock"
+        echo "::notice::Set version to $V across $APP/package.json, $DIR/tauri.conf.json, ${#crates[@]} crate(s) and $lock"
