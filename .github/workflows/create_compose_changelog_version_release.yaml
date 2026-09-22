@@ -1,6 +1,13 @@
 name: Create Compose Changelog + Version + Release
 on:
   workflow_call:
+    inputs:
+      product_name:
+        description: >
+          Name shown in the release notification. Empty uses the repository
+          name, which is the right answer for every product so far.
+        type: string
+        default: ""
 
 jobs:
   release:
@@ -27,3 +34,17 @@ jobs:
           tag_name: ${{ steps.changelog.outputs.tag }}
           name: ${{ steps.changelog.outputs.tag }}
           body: ${{ steps.changelog.outputs.clean_changelog }}
+
+      - name: Announce the release
+        # Only when one was made: with no conventional commits since the last
+        # tag there is no release to announce. Never able to fail the release
+        # either — it is already published by the time this runs.
+        if: ${{ steps.changelog.outputs.tag }}
+        continue-on-error: true
+        uses: NoiXdev/github-workflows/actions/announce-release@main
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
+          tag: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+          url: ${{ steps.release.outputs.url }}
+          product-name: ${{ inputs.product_name }}

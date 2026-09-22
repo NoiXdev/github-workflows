@@ -1,0 +1,55 @@
+name: Announce a release on Discord
+description: >
+  Post a finished release to the organisation's Discord channel, or do nothing
+  at all when the repository has no webhook configured. Every product posts
+  into the same channel, so the message carries the product's name as well as
+  the version — a title saying only "v1.2.0" does not identify anything.
+
+  The caller decides when a release happened; this action only formats and
+  sends. Nothing it does is important enough to fail a release, so callers
+  should give the step `continue-on-error: true`.
+
+inputs:
+  webhook:
+    description: >
+      The Discord webhook URL, normally `secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION`.
+      Empty — a repository that has never set the secret — posts nothing and
+      succeeds, which is why the check is on a value and not on `secrets.*`:
+      `if: secrets.X != ''` is not evaluated at all.
+    required: false
+    default: ""
+  tag:
+    description: "The release tag, e.g. v1.2.0"
+    required: true
+  body:
+    description: "The release notes; the changelog action's `clean_changelog`"
+    required: false
+    default: ""
+  url:
+    description: "The release's HTML URL, from the create-release step's `url` output"
+    required: false
+    default: ""
+  product-name:
+    description: >
+      Name shown as the sender and in the title. Empty uses the repository
+      name, which is the right answer for every product so far.
+    required: false
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - if: inputs.webhook != ''
+      uses: SethCohen/github-releases-to-discord@v1
+      with:
+        webhook_url: ${{ inputs.webhook }}
+        color: "2105893"
+        username: ${{ inputs.product-name != '' && inputs.product-name || github.event.repository.name }}
+        footer_title: NoiX Releases
+        # The action reads github.event.release, which exists only on a
+        # `release` trigger. Every workflow here is dispatched or push-driven,
+        # so these three are passed explicitly; without them it fails outright
+        # with "No GitHub release payload found".
+        release_name: ${{ inputs.product-name != '' && inputs.product-name || github.event.repository.name }} ${{ inputs.tag }}
+        release_body: ${{ inputs.body }}
+        release_html_url: ${{ inputs.url }}

@@ -1,6 +1,13 @@
 name: Create NPM Changelog + Version + Release + Publish
 on:
   workflow_call:
+    inputs:
+      product_name:
+        description: >
+          Name shown in the release notification. Empty uses the repository
+          name, which is the right answer for every product so far.
+        type: string
+        default: ""
 
 jobs:
   release:
@@ -67,3 +74,18 @@ jobs:
         run: npm publish
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Announce the release
+        # Last, so the message goes out once the package is actually on the
+        # registry — an announcement ahead of a failed publish points at
+        # something nobody can install. Only when a release was made, and
+        # never able to fail one.
+        if: ${{ steps.changelog.outputs.tag }}
+        continue-on-error: true
+        uses: NoiXdev/github-workflows/actions/announce-release@main
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
+          tag: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+          url: ${{ steps.release.outputs.url }}
+          product-name: ${{ inputs.product_name }}
