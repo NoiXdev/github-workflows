@@ -130,6 +130,8 @@ jobs:
         with:
           bump: ${{ inputs.bump }}
           prerelease: ${{ inputs.prerelease_id }}
+          # Reads the current version, so it must look where package.json is.
+          version-file: ${{ inputs.app_dir }}/package.json
 
       - name: Set version across all files
         uses: NoiXdev/github-workflows/actions/set-tauri-version@main
