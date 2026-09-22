@@ -275,6 +275,14 @@ jobs:
         with:
           targets: aarch64-apple-darwin,x86_64-apple-darwin
 
+      - name: Add both macOS targets to the toolchain cargo will use
+        # dtolnay/rust-toolchain adds targets to the toolchain it fetches. A
+        # repository pinning a version in rust-toolchain.toml builds with that
+        # one instead, which carries only the host target — the universal
+        # build then fails after compiling everything. `rustup target add`
+        # here applies to whichever toolchain is actually active.
+        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+
       - uses: Swatinem/rust-cache@v2
         with:
           workspaces: ${{ inputs.rust_workspace || inputs.tauri_dir }}
