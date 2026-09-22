@@ -112,6 +112,8 @@ jobs:
       tag: ${{ steps.ver.outputs.tag }}
       is_prerelease: ${{ steps.ver.outputs.is-prerelease }}
       release_id: ${{ steps.release.outputs.id }}
+      release_url: ${{ steps.release.outputs.url }}
+      notes: ${{ steps.changelog.outputs.clean_changelog }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -379,6 +381,11 @@ jobs:
         # evaluated, so the check is made against an env value instead. A
         # repository without a webhook skips this silently rather than failing.
         if: env.WEBHOOK != ''
+        # A notification is the least important thing this workflow does. It
+        # must never fail the release, and — because the calling workflow's
+        # own jobs wait on this one — must never hold back the artifacts a
+        # caller attaches afterwards.
+        continue-on-error: true
         env:
           WEBHOOK: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
         uses: SethCohen/github-releases-to-discord@v1
@@ -386,3 +393,9 @@ jobs:
           webhook_url: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
           color: "2105893"
           username: "NoiX Releases"
+          # The action reads github.event.release, which exists only on a
+          # `release` trigger. This workflow is dispatched, so the three
+          # fields are passed explicitly; without them it fails outright.
+          release_name: ${{ needs.prepare.outputs.tag }}
+          release_body: ${{ needs.prepare.outputs.notes }}
+          release_html_url: ${{ needs.prepare.outputs.release_url }}
