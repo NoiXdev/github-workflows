@@ -64,6 +64,13 @@ on:
       tag:
         description: "The created release tag (e.g. v0.5.0)"
         value: ${{ jobs.prepare.outputs.tag }}
+      is-prerelease:
+        description: >
+          "true" when the released version carries a prerelease part. Callers
+          gate anything that must only see final releases on this — a Homebrew
+          tap above all, since Homebrew has no concept of a prerelease and
+          `brew upgrade` would otherwise hand every user the beta.
+        value: ${{ jobs.prepare.outputs.is_prerelease }}
 
 permissions:
   contents: write
@@ -75,6 +82,7 @@ jobs:
     outputs:
       next: ${{ steps.ver.outputs.next }}
       tag: ${{ steps.ver.outputs.tag }}
+      is_prerelease: ${{ steps.ver.outputs.is-prerelease }}
       release_id: ${{ steps.release.outputs.id }}
     steps:
       - uses: actions/checkout@v4
