@@ -2,6 +2,29 @@
 
 Repository containing our shared github workflows
 
+## Pinned actions
+
+Every third-party action is pinned to a full commit SHA, with the version
+it was at in a trailing comment. A moving tag — `@v4`, or worse `@stable`
+— means whatever its owner points it at next runs here, and these
+workflows cut releases and push to registries on behalf of every NoiX
+product: a compromise of any one action would reach all of them at once.
+
+Re-verified 2026-10-09 against `gh api repos/<owner>/<repo>/git/ref/tags/<tag>`
+(annotated tags dereferenced to their commit), with the concrete version
+read back from each repository's tag list.
+
+**The pinned SHA is what the *referenced* tag pointed at, not the newest
+release.** Several of these majors are well behind — `actions/checkout@v4`
+against a v7 latest, `action-gh-release@v2` against v3 — so pinning to
+"latest" would be a silent multi-major upgrade wearing the clothes of a
+lockdown. Upgrading is its own decision, made deliberately.
+
+The three `NoiXdev/github-workflows/actions/...@main` self-references are
+deliberately still floating: a repository pinning itself turns every
+change into a two-step dance, and the sensible answer is a release tag
+for this repository — a decision for its owner, not one to invent here.
+
 ## Workflow Documentation
 
 #### [Create Compose Changelog + Version + Release](./.github/workflows/create_compose_changelog_version_release.yaml)
