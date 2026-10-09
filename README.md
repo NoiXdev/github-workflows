@@ -2,6 +2,22 @@
 
 Repository containing our shared github workflows
 
+## Releasing a Go product
+
+`create_go_changelog_version_release.yaml` is the Go counterpart to the
+compose one, and deliberately shorter: a Go binary takes its version from
+the tag at build time (`-ldflags "-X main.version=..."`), so there is no
+file holding a number that has to be kept in step. The workflow therefore
+skips the version file entirely — bumping one nothing reads would add a
+commit per release and nothing else. A private, unpublished
+`web/package.json` is the usual trap here: its `version` field is
+decoration, and this workflow leaves it alone.
+
+`blueprints/release-go.yaml` triggers on CI *completing* on the default
+branch rather than on a push or a tag. That is what makes "only the
+default branch" and "only a green commit" true by construction instead of
+by a check someone has to write and keep correct.
+
 ## Pinned actions
 
 Every third-party action is pinned to a full commit SHA, with the version

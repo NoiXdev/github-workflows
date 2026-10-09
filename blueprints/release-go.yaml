@@ -1,0 +1,32 @@
+name: Release
+run-name: Create Release for ${{ github.event.repository.name }}
+
+# Triggered by CI finishing, not by a push or a tag. That is what makes the
+# two rules hold by construction rather than by checking:
+#
+#   - only the default branch can release, because `branches` filters the
+#     run that triggered this one;
+#   - only a green commit can release, because the job is gated on that
+#     run's conclusion.
+#
+# A tag-triggered release, by contrast, publishes whatever someone tagged,
+# on whatever branch, whether or not anything ever passed — and the check
+# for that has to be written, maintained and trusted. Here there is nothing
+# to get wrong.
+on:
+  workflow_run:
+    workflows: [ci]       # must match the `name:` of the CI workflow
+    types: [completed]
+    branches: [main]
+
+concurrency: release
+
+permissions:
+  contents: write
+
+jobs:
+
+  release:
+    if: ${{ github.event.workflow_run.conclusion == 'success' }}
+    uses: NoiXdev/github-workflows/.github/workflows/create_go_changelog_version_release.yaml@main
+    secrets: inherit

@@ -1,0 +1,76 @@
+name: Create Go Changelog + Version + Release
+# The Go counterpart to create_compose_changelog_version_release. It is the
+# shorter of the two, because a Go project has nowhere to write a version
+# to: the binary takes it from the tag at build time
+# (-ldflags "-X main.version=..."), so there is no composer.json or
+# package.json holding a number that has to be kept in step. Bumping a file
+# nothing reads would only add a commit per release.
+#
+# A repository with a private, unpublished web/package.json is the usual
+# shape here — its "version" field is decoration, never read and never
+# published, so this workflow deliberately leaves it alone rather than
+# creating the illusion that it means something.
+#
+# The caller is expected to trigger this from CI's own completion rather
+# than from a push, so that only a green commit on the default branch can
+# ever produce a release; see blueprints/release-go.yaml.
+on:
+  workflow_call:
+    inputs:
+      product_name:
+        description: >
+          Name shown in the release notification. Empty uses the repository
+          name, which is the right answer for every product so far.
+        type: string
+        default: ""
+
+jobs:
+  release:
+    name: Create Go Changelog + Version + Release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The changelog is built from the commits since the last tag, so a
+          # shallow clone would see neither the tag nor most of the history.
+          fetch-depth: 0
+          # A workflow_run-triggered run checks out the default branch, not
+          # the commit that passed CI. Naming it explicitly keeps the
+          # changelog and the tag on the commit the release is actually for.
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+
+      - name: Generate changelog and calculate version number
+        id: changelog
+        uses: TriPSs/conventional-changelog-action@ee43def3241429afddab215ba89090cbf64fb45c # v6.4.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          # No version file: see the note at the top. The version still comes
+          # out of the commits, it simply is not written into the tree —
+          # CHANGELOG.md and the tag are what carry it.
+          skip-version-file: true
+          skip-on-empty: false
+
+      - name: Create release
+        id: release
+        if: ${{ steps.changelog.outputs.tag }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          token: ${{ secrets.github_token }}
+          tag_name: ${{ steps.changelog.outputs.tag }}
+          name: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+
+      - name: Announce the release
+        # Only when one was made: with no conventional commits since the last
+        # tag there is no release to announce. Never able to fail the release
+        # either — it is already published by the time this runs.
+        if: ${{ steps.changelog.outputs.tag }}
+        continue-on-error: true
+        uses: NoiXdev/github-workflows/actions/announce-release@main
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
+          tag: ${{ steps.changelog.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+          url: ${{ steps.release.outputs.url }}
+          product-name: ${{ inputs.product_name }}
