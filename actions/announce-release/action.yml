@@ -40,7 +40,7 @@ runs:
   using: composite
   steps:
     - if: inputs.webhook != ''
-      uses: SethCohen/github-releases-to-discord@v1
+      uses: SethCohen/github-releases-to-discord@24d166886aee4646d448c8a389ff9e1ebcab3682 # v1.20.0
       with:
         webhook_url: ${{ inputs.webhook }}
         color: "2105893"
