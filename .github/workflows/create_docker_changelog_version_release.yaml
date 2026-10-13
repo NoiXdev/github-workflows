@@ -85,6 +85,15 @@ on:
         description: "Paths attached to the GitHub release. Empty attaches nothing."
         type: string
         default: ""
+      ref:
+        description: >
+          The commit or ref to release. Empty uses `main`, which is what every
+          existing caller gets. A caller that gates the release on jobs of its
+          own passes `${{ github.sha }}`: those jobs ran on that commit, and
+          without this the release would check out whatever `main` points at
+          by the time they finish - a tree nothing gated.
+        type: string
+        default: ""
     outputs:
       tag:
         description: "The created release tag (e.g. v0.1.0-rc.1)"
@@ -144,7 +153,7 @@ jobs:
           # The changelog is built from the commits since the last tag, so a
           # shallow clone would see neither the tag nor most of the history.
           fetch-depth: 0
-          ref: main
+          ref: ${{ inputs.ref || 'main' }}
           token: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Set up Node
@@ -298,6 +307,10 @@ jobs:
           # -A rather than a fixed list: `version_script` writes files at paths
           # this workflow cannot predict, and a version written but left
           # uncommitted is the worst of both outcomes.
+          # The checkout may be a detached commit that is not the tip of main:
+          # the push below is a fast-forward while main has not moved and is
+          # rejected if it has, which is intended - loud, before anything is
+          # tagged, instead of a silently ungated release.
           git add -A
           if git diff --staged --quiet; then
             echo "Nothing to commit."
