@@ -246,12 +246,15 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ vars.DOCKERHUB_IMAGE }}
-          # The action adds `latest` itself in its default `auto` mode for
-          # every `type=semver` entry, which would walk straight past the
-          # `enable=` gates below - so the implicit one is switched off and the
-          # explicit, gated entry is the only thing that can produce it. Stated
-          # rather than inherited: a candidate that moved `latest` would hand
-          # itself to everyone who pins nothing.
+          # In its default `auto` flavor the action sets `latest` itself for a
+          # `type=semver` entry whose version carries no pre-release part
+          # (src/meta.ts:183-196 at the pinned commit) - past the `enable=`
+          # gates below, which it never consults. A candidate escapes that by
+          # accident, because its version has a pre-release part; a release
+          # marked pre-release through the `prerelease` input while carrying a
+          # final version does not, and that input exists for exactly that
+          # case. So the implicit tag is switched off and the explicit, gated
+          # entry is the only thing that can produce `latest`.
           flavor: |
             latest=false
           # `{{version}}` always; everything that moves is gated on this not
