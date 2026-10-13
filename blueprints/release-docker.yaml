@@ -54,4 +54,8 @@ jobs:
       platforms: linux/amd64,linux/arm64
       version_file: version.json
       version_script: tools/set_version.py
+      # The jobs above ran on this dispatch's commit; without this the shared
+      # workflow would check out whatever `main` points at by the time they
+      # finish.
+      ref: ${{ github.sha }}
     secrets: inherit
