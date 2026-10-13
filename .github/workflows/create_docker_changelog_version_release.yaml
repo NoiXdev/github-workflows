@@ -232,6 +232,15 @@ jobs:
           skip-bump: "true"
           skip-version-file: "true"
           skip-on-empty: "false"
+          # The version is owned by `compute-version`, and with `skip-bump` on
+          # this is the only way the generated heading can carry it: the
+          # action only learns a version inside the bump it has been told to
+          # skip, so without this the heading is version-less on every release.
+          fallback-version: ${{ steps.ver.outputs.next }}
+          # Leaving this at its default would make a second candidate's notes
+          # restate every commit since the last stable tag; the derived flag
+          # keeps them to the commits since the previous candidate.
+          pre-release: ${{ steps.ver.outputs.is-prerelease }}
           # Both of these matter because `ref` above may be a commit rather
           # than a branch, which leaves a detached HEAD: this action's `git
           # pull` is not gated on `skip-commit` or `skip-tag`, and on a
@@ -306,6 +315,34 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
+      # A dry run's whole purpose is to be read, and the version rewrite is
+      # the thing most worth reading: a compose default naming a tag that was
+      # never published does not fail at sync time, it stops the project from
+      # starting at all. Without this the rehearsal shows what it *would* have
+      # tagged but not what it changed in the tree.
+      - name: Show what the rehearsal changed
+        if: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Dry run - nothing was pushed"
+            echo ""
+            echo "No image, no commit, no tag, no release, no announcement."
+            echo ""
+            echo "Files the version rewrite touched:"
+            echo '```'
+            git diff --stat
+            echo '```'
+            echo ""
+            echo "<details><summary>Full diff</summary>"
+            echo ""
+            echo '```diff'
+            git diff
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Commit the version and the changelog, then tag
         if: ${{ inputs.dry_run == false }}
         env:
@@ -359,6 +396,7 @@ jobs:
           NEXT: ${{ steps.ver.outputs.next }}
           BUMP: ${{ inputs.bump }}
           IS_PRERELEASE: ${{ steps.ver.outputs.is-prerelease }}
+          PRERELEASE_INPUT: ${{ inputs.prerelease }}
           PLATFORMS: ${{ inputs.platforms }}
           DRY_RUN: ${{ inputs.dry_run }}
           DIGEST: ${{ steps.build.outputs.digest }}
@@ -372,7 +410,8 @@ jobs:
             echo "| Previous version | \`${PREVIOUS}\` |"
             echo "| New version | \`${NEXT}\` |"
             echo "| Bump type | \`${BUMP}\` |"
-            echo "| Prerelease | \`${IS_PRERELEASE}\` |"
+            echo "| Prerelease (derived) | \`${IS_PRERELEASE}\` |"
+            echo "| Prerelease (input) | \`${PRERELEASE_INPUT}\` |"
             echo "| Platforms | \`${PLATFORMS}\` |"
             echo "| Dry run | \`${DRY_RUN}\` |"
             echo "| Digest | \`${DIGEST}\` |"
