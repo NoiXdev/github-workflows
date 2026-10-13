@@ -1,0 +1,55 @@
+name: Release
+run-name: Release ${{ inputs.bump }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+# Dispatch-driven, not triggered by a push or by CI finishing. A release that
+# ships a numbered candidate needs three things the commits cannot supply:
+# which part to bump, whether this is a candidate, and whether to rehearse.
+#
+# The green-commit guarantee that a workflow_run trigger gets by construction
+# is bought back here with `needs:` - name your own CI and verification
+# workflows there, and they run on the ref being released rather than on an
+# earlier run that is trusted to still apply. The branch guard does the rest.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      prerelease_id:
+        description: "Prerelease identifier (rc, beta); empty promotes to a final version"
+        type: string
+        default: ""
+      dry_run:
+        description: "Run every gate and build, push nothing"
+        type: boolean
+        default: false
+
+concurrency: release
+
+permissions:
+  contents: write
+
+jobs:
+
+  gates:
+    if: ${{ github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/ci.yaml
+
+  release:
+    needs: [gates]
+    uses: NoiXdev/github-workflows/.github/workflows/create_docker_changelog_version_release.yaml@main
+    with:
+      bump: ${{ inputs.bump }}
+      prerelease_id: ${{ inputs.prerelease_id }}
+      dry_run: ${{ inputs.dry_run }}
+      # Two platforms build through emulation; drop the second to build only
+      # what the runner is.
+      platforms: linux/amd64,linux/arm64
+      version_file: version.json
+      version_script: tools/set_version.py
+    secrets: inherit

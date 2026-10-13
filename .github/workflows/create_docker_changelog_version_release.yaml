@@ -1,0 +1,349 @@
+name: Create Docker Changelog + Version + Release
+
+# Reusable, dispatch-driven release for a product that ships a container image.
+# The caller picks a bump; this workflow computes the next version, writes it
+# into the tree, builds and pushes the image, commits, tags, releases and
+# announces.
+#
+# Three things are worth knowing before changing the order of the steps.
+#
+# The image is built AFTER the version is written, because a product whose
+# binary or package metadata carries its version would otherwise ship an
+# image claiming the previous one.
+#
+# The image is pushed BEFORE the commit and the tag. Neither order is atomic,
+# so the question is which orphan is cheaper: a pushed image whose release
+# failed is a tag nobody references and the same tag can be pushed again,
+# while a pushed git tag whose image push failed is a tag in a public
+# repository that others may already have fetched.
+#
+# A pre-release publishes exactly one image tag. `latest` and the truncated
+# semver tags are all gated on the release not being one, because a candidate
+# that moved `latest` would hand itself to everyone who pins nothing.
+on:
+  workflow_call:
+    inputs:
+      bump:
+        description: "Version bump: patch, minor or major"
+        required: true
+        type: string
+      prerelease_id:
+        description: >
+          Prerelease identifier (alpha, beta, rc). Empty produces a final
+          version, which is what every existing caller gets. From 0.0.0 with
+          bump=minor and id=rc comes 0.1.0-rc.1; calling again with the same
+          id yields 0.1.0-rc.2; calling with an empty id promotes it to 0.1.0
+          and ignores the bump.
+        type: string
+        default: ""
+      prerelease:
+        description: >
+          Force the GitHub release to be marked as a pre-release. A version
+          carrying a prerelease part marks itself, so this is only needed to
+          flag an otherwise final version.
+        type: boolean
+        default: false
+      dry_run:
+        description: "Build everything but push nothing: no image, no commit, no tag, no release"
+        type: boolean
+        default: false
+      platforms:
+        description: >
+          Comma-separated build platforms. The default is the single platform
+          every existing caller builds today; naming a second one builds a
+          multi-architecture image through QEMU.
+        type: string
+        default: linux/amd64
+      version_file:
+        description: >
+          JSON file holding the current version. `compute-version` reads it
+          with node, so it has to be JSON - a TOML or YAML manifest needs
+          `version_script` below instead.
+        type: string
+        default: package.json
+      version_script:
+        description: >
+          Executable in the repository, invoked as `./<script> <version>`,
+          that writes the version into every other file naming one. Empty
+          means only `version_file` is written, which is what a product with a
+          single manifest wants.
+        type: string
+        default: ""
+      product_name:
+        description: >
+          Name shown in the release notification and the image title. Empty
+          uses the repository name.
+        type: string
+        default: ""
+      release_files:
+        description: "Paths attached to the GitHub release. Empty attaches nothing."
+        type: string
+        default: ""
+    outputs:
+      tag:
+        description: "The created release tag (e.g. v0.1.0-rc.1)"
+        value: ${{ jobs.release.outputs.tag }}
+      version:
+        description: "The released version, without the leading v"
+        value: ${{ jobs.release.outputs.version }}
+      is_prerelease:
+        description: >
+          "true" when the released version carries a prerelease part. Callers
+          gate anything that must only see final releases on this.
+        value: ${{ jobs.release.outputs.is_prerelease }}
+      release_url:
+        description: "URL of the GitHub release, empty on a dry run"
+        value: ${{ jobs.release.outputs.release_url }}
+      image_digest:
+        description: "Digest of the pushed image, empty on a dry run"
+        value: ${{ jobs.release.outputs.image_digest }}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Docker Changelog + Version + Release
+    runs-on: ubuntu-latest
+    # A multi-architecture build under emulation is the slow part; the default
+    # six hours would hold a runner for a whole working day if it hung.
+    timeout-minutes: 90
+    # Step outputs are job-local, so everything the announce job and the
+    # caller need has to be re-exported here.
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.next }}
+      is_prerelease: ${{ steps.ver.outputs.is-prerelease }}
+      release_url: ${{ steps.gh_release.outputs.url }}
+      image_digest: ${{ steps.build.outputs.digest }}
+      notes: ${{ steps.changelog.outputs.clean_changelog }}
+    steps:
+      # First, so that a missing variable is named here instead of surfacing
+      # as an authentication error from the registry halfway through.
+      - name: Validate the Docker Hub configuration
+        env:
+          DOCKERHUB_NAMESPACE: ${{ vars.DOCKERHUB_NAMESPACE }}
+          DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
+          DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+          DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+        run: |
+          : "${DOCKERHUB_NAMESPACE:?Variable DOCKERHUB_NAMESPACE is not set}"
+          : "${DOCKERHUB_IMAGE:?Variable DOCKERHUB_IMAGE is not set}"
+          : "${DOCKERHUB_USERNAME:?Secret DOCKERHUB_USERNAME is not set}"
+          : "${DOCKERHUB_TOKEN:?Secret DOCKERHUB_TOKEN is not set}"
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The changelog is built from the commits since the last tag, so a
+          # shallow clone would see neither the tag nor most of the history.
+          fetch-depth: 0
+          ref: main
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: "22"
+
+      - name: Compute the next version
+        id: ver
+        # Deliberately unpinned: it is this repository's own action, and the
+        # README records why the self-references float.
+        uses: NoiXdev/github-workflows/actions/compute-version@main
+        with:
+          bump: ${{ inputs.bump }}
+          prerelease: ${{ inputs.prerelease_id }}
+          version-file: ${{ inputs.version_file }}
+
+      # Through the environment rather than interpolated into the script text,
+      # for the reason `compute-version` gives for its own env block: `${{ }}`
+      # is substituted before bash sees the line.
+      - name: Write the version into the version file
+        env:
+          VERSION_FILE: ${{ inputs.version_file }}
+          VERSION: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const file = process.env.VERSION_FILE;
+            const data = JSON.parse(fs.readFileSync(file, "utf8"));
+            data.version = process.env.VERSION;
+            fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+          '
+
+      - name: Write the version everywhere else
+        if: ${{ inputs.version_script != '' }}
+        env:
+          VERSION_SCRIPT: ${{ inputs.version_script }}
+          VERSION: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          if [ ! -x "./${VERSION_SCRIPT}" ]; then
+            echo "::error::${VERSION_SCRIPT} is not an executable file in this repository"
+            exit 1
+          fi
+          "./${VERSION_SCRIPT}" "${VERSION}"
+
+      # What catches a version_script that silently did nothing, and a
+      # version_file the script rewrote back to something else.
+      - name: Verify the version is in sync
+        env:
+          VERSION_FILE: ${{ inputs.version_file }}
+          VERSION: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          have="$(node -p "require('./' + process.env.VERSION_FILE).version")"
+          if [ "${have}" != "${VERSION}" ]; then
+            echo "::error::${VERSION_FILE} says ${have}, the release is ${VERSION}"
+            exit 1
+          fi
+          echo "${VERSION_FILE} says ${have} - in sync"
+
+      - name: Generate CHANGELOG.md
+        id: changelog
+        # Text only: the version is owned by the steps above, so every skip-*
+        # is on to stop this action from bumping, committing or tagging.
+        uses: TriPSs/conventional-changelog-action@ee43def3241429afddab215ba89090cbf64fb45c # v6.4.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          preset: conventionalcommits
+          tag-prefix: "v"
+          output-file: CHANGELOG.md
+          release-count: 0
+          skip-commit: "true"
+          skip-tag: "true"
+          skip-bump: "true"
+          skip-version-file: "true"
+          skip-on-empty: "false"
+
+      # Only needed when `platforms` names something the runner is not, but
+      # setting it up unconditionally costs seconds and removes a conditional
+      # whose failure mode is an unexplained "exec format error".
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@99012661954931238ded8c8b007157a8430204e1 # v4.4.0
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Log in to Docker Hub
+        if: ${{ inputs.dry_run == false }}
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: docker.io
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Compute the image tags
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ vars.DOCKERHUB_IMAGE }}
+          # `{{version}}` always; everything that moves is gated on this not
+          # being a pre-release, derived from the computed version as well as
+          # from the input so the two cannot disagree.
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.ver.outputs.tag }}
+            type=raw,value=latest,enable=${{ inputs.prerelease == false && steps.ver.outputs.is-prerelease != 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ver.outputs.tag }},enable=${{ inputs.prerelease == false && steps.ver.outputs.is-prerelease != 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.ver.outputs.tag }},enable=${{ inputs.prerelease == false && steps.ver.outputs.is-prerelease != 'true' }}
+          labels: |
+            org.opencontainers.image.title=${{ inputs.product_name || github.event.repository.name }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.next }}
+
+      - name: Build and push the image
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.dry_run == false }}
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Commit the version and the changelog, then tag
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GIT_AUTHOR_NAME: noix-dev-bot
+          GIT_AUTHOR_EMAIL: noix-dev-bot@noix.dev
+          GIT_COMMITTER_NAME: noix-dev-bot
+          GIT_COMMITTER_EMAIL: noix-dev-bot@noix.dev
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          # -A rather than a fixed list: `version_script` writes files at paths
+          # this workflow cannot predict, and a version written but left
+          # uncommitted is the worst of both outcomes.
+          git add -A
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+          else
+            # [skip ci] so the release commit does not start another CI run.
+            git commit -m "chore(release): ${TAG} [skip ci]"
+            git push origin HEAD:main
+          fi
+          git tag -a "${TAG}" -m "${TAG}"
+          git push origin "${TAG}"
+
+      - name: Create the GitHub release
+        id: gh_release
+        if: ${{ inputs.dry_run == false }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          body: ${{ steps.changelog.outputs.clean_changelog }}
+          # Either the caller asked for it, or the version says so. Derived
+          # rather than trusted, so a release cannot be marked final while
+          # carrying a candidate version.
+          prerelease: ${{ inputs.prerelease || steps.ver.outputs.is-prerelease == 'true' }}
+          files: ${{ inputs.release_files }}
+
+      - name: Summary
+        run: |
+          {
+            echo "### Release ${{ steps.ver.outputs.tag }}"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Previous version | \`${{ steps.ver.outputs.current }}\` |"
+            echo "| New version | \`${{ steps.ver.outputs.next }}\` |"
+            echo "| Bump type | \`${{ inputs.bump }}\` |"
+            echo "| Prerelease | \`${{ steps.ver.outputs.is-prerelease }}\` |"
+            echo "| Platforms | \`${{ inputs.platforms }}\` |"
+            echo "| Dry run | \`${{ inputs.dry_run }}\` |"
+            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo ""
+            echo "**Image tags:**"
+            echo '```'
+            echo "${{ steps.meta.outputs.tags }}"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  announce:
+    name: Announce the release
+    needs: [release]
+    # No `always()`: when the release job fails nothing shipped, so a skipped
+    # announcement is the correct outcome. Dry runs create no release either.
+    if: ${{ inputs.dry_run == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        # A notification is the least important thing this workflow does and
+        # must never fail the release.
+        continue-on-error: true
+        uses: NoiXdev/github-workflows/actions/announce-release@main
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
+          tag: ${{ needs.release.outputs.tag }}
+          body: ${{ needs.release.outputs.notes }}
+          url: ${{ needs.release.outputs.release_url }}
+          product-name: ${{ inputs.product_name }}

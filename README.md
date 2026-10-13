@@ -48,6 +48,27 @@ for this repository — a decision for its owner, not one to invent here.
 A Simple Workflow that generates a changelog, version and creates a release designed for php composer projects
 See Bluprint for how to use it [here](./blueprints/release.yaml)
 
+#### [Create Docker Changelog + Version + Release](./.github/workflows/create_docker_changelog_version_release.yaml)
+
+A dispatch-driven release for a product that ships a container image. It
+computes the next version, writes it into the tree, builds and pushes the
+image to Docker Hub, commits, tags, creates the release and announces it.
+Supports `prerelease_id`, `dry_run` and multi-architecture builds through
+`platforms`.
+
+Docker Hub is addressed through `vars.DOCKERHUB_NAMESPACE` /
+`vars.DOCKERHUB_IMAGE` and `secrets.DOCKERHUB_USERNAME` /
+`secrets.DOCKERHUB_TOKEN`, as the per-repository release workflows it
+generalises already do.
+
+A product whose version lives somewhere other than a JSON manifest — a
+`pyproject.toml`, a compose default, a shell script — points `version_script`
+at an executable in its own repository, invoked as `./<script> <version>`.
+How a version reaches those files is the product's business, not this
+repository's; the same escape hatch the Tauri workflow has for its macOS
+build.
+See the blueprint for how to use it [here](./blueprints/release-docker.yaml).
+
 #### [Create NPM Changelog + Version + Release + Publish](./.github/workflows/create_npm_changelog_version_release_publish.yaml)
 
 A Simple Workflow that generates a changelog, version and creates a release designed for npm projects
