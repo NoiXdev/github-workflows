@@ -37,6 +37,8 @@ permissions:
 jobs:
 
   gates:
+    # The workflow named here must itself declare a `workflow_call` trigger,
+    # or the call fails to resolve.
     if: ${{ github.ref == 'refs/heads/main' }}
     uses: ./.github/workflows/ci.yaml
 

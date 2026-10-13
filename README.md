@@ -59,7 +59,8 @@ Supports `prerelease_id`, `dry_run` and multi-architecture builds through
 Docker Hub is addressed through `vars.DOCKERHUB_NAMESPACE` /
 `vars.DOCKERHUB_IMAGE` and `secrets.DOCKERHUB_USERNAME` /
 `secrets.DOCKERHUB_TOKEN`, as the per-repository release workflows it
-generalises already do.
+generalises already do. The workflow reads those secrets and the Discord
+webhook without declaring them, so a caller has to pass `secrets: inherit`.
 
 A product whose version lives somewhere other than a JSON manifest — a
 `pyproject.toml`, a compose default, a shell script — points `version_script`

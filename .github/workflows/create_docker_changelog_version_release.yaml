@@ -44,7 +44,11 @@ on:
         type: boolean
         default: false
       dry_run:
-        description: "Build everything but push nothing: no image, no commit, no tag, no release"
+        description: >
+          Build everything but push nothing: no image, no commit, no tag, no
+          release. It still validates the Docker Hub configuration, so a
+          missing secret is caught by the rehearsal, and it still writes the
+          GitHub Actions build cache; neither is a push.
         type: boolean
         default: false
       platforms:
@@ -58,7 +62,9 @@ on:
         description: >
           JSON file holding the current version. `compute-version` reads it
           with node, so it has to be JSON - a TOML or YAML manifest needs
-          `version_script` below instead.
+          `version_script` below instead. The file is rewritten with
+          `JSON.stringify(data, null, 2)`, so a manifest indented with tabs or
+          four spaces comes back two-space indented.
         type: string
         default: package.json
       version_script:
@@ -240,6 +246,14 @@ jobs:
         uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
         with:
           images: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ vars.DOCKERHUB_IMAGE }}
+          # The action adds `latest` itself in its default `auto` mode for
+          # every `type=semver` entry, which would walk straight past the
+          # `enable=` gates below - so the implicit one is switched off and the
+          # explicit, gated entry is the only thing that can produce it. Stated
+          # rather than inherited: a candidate that moved `latest` would hand
+          # itself to everyone who pins nothing.
+          flavor: |
+            latest=false
           # `{{version}}` always; everything that moves is gated on this not
           # being a pre-release, derived from the computed version as well as
           # from the input so the two cannot disagree.
@@ -307,24 +321,37 @@ jobs:
           prerelease: ${{ inputs.prerelease || steps.ver.outputs.is-prerelease == 'true' }}
           files: ${{ inputs.release_files }}
 
+      # Every value through the environment, for the reason the version-write
+      # step gives: `bump` and `platforms` are free text, and `${{ }}` inside
+      # `run:` is substituted before bash sees the line.
       - name: Summary
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          PREVIOUS: ${{ steps.ver.outputs.current }}
+          NEXT: ${{ steps.ver.outputs.next }}
+          BUMP: ${{ inputs.bump }}
+          IS_PRERELEASE: ${{ steps.ver.outputs.is-prerelease }}
+          PLATFORMS: ${{ inputs.platforms }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+          TAGS: ${{ steps.meta.outputs.tags }}
         run: |
           {
-            echo "### Release ${{ steps.ver.outputs.tag }}"
+            echo "### Release ${TAG}"
             echo ""
             echo "| Field | Value |"
             echo "| --- | --- |"
-            echo "| Previous version | \`${{ steps.ver.outputs.current }}\` |"
-            echo "| New version | \`${{ steps.ver.outputs.next }}\` |"
-            echo "| Bump type | \`${{ inputs.bump }}\` |"
-            echo "| Prerelease | \`${{ steps.ver.outputs.is-prerelease }}\` |"
-            echo "| Platforms | \`${{ inputs.platforms }}\` |"
-            echo "| Dry run | \`${{ inputs.dry_run }}\` |"
-            echo "| Digest | \`${{ steps.build.outputs.digest }}\` |"
+            echo "| Previous version | \`${PREVIOUS}\` |"
+            echo "| New version | \`${NEXT}\` |"
+            echo "| Bump type | \`${BUMP}\` |"
+            echo "| Prerelease | \`${IS_PRERELEASE}\` |"
+            echo "| Platforms | \`${PLATFORMS}\` |"
+            echo "| Dry run | \`${DRY_RUN}\` |"
+            echo "| Digest | \`${DIGEST}\` |"
             echo ""
             echo "**Image tags:**"
             echo '```'
-            echo "${{ steps.meta.outputs.tags }}"
+            echo "${TAGS}"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
 
