@@ -329,7 +329,12 @@ jobs:
             echo ""
             echo "No image, no commit, no tag, no release, no announcement."
             echo ""
-            echo "Files the version rewrite touched:"
+            echo "Files the rehearsal touched, tracked and untracked:"
+            echo '```'
+            git status --short
+            echo '```'
+            echo ""
+            echo "Diffstat of the tracked ones:"
             echo '```'
             git diff --stat
             echo '```'
@@ -342,6 +347,24 @@ jobs:
             echo ""
             echo "</details>"
           } >> "$GITHUB_STEP_SUMMARY"
+          # `git diff` covers tracked files only, so the changelog a first
+          # release creates would be invisible above. Its heading is worth
+          # reading: the version in it comes from `fallback-version`, because
+          # `skip-bump` stops the action computing one of its own, and a
+          # rehearsal that cannot show it leaves that unverifiable until a
+          # real release. Guarded, since a repository with no changelog, or
+          # an `output-file` elsewhere, must not fail the rehearsal.
+          if [ -f CHANGELOG.md ]; then
+            {
+              echo "<details><summary>CHANGELOG.md, first 40 lines</summary>"
+              echo ""
+              echo '```markdown'
+              head -40 CHANGELOG.md
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
 
       - name: Commit the version and the changelog, then tag
         if: ${{ inputs.dry_run == false }}
