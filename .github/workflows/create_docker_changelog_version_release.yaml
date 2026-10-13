@@ -89,9 +89,13 @@ on:
         description: >
           The commit or ref to release. Empty uses `main`, which is what every
           existing caller gets. A caller that gates the release on jobs of its
-          own passes `${{ github.sha }}`: those jobs ran on that commit, and
-          without this the release would check out whatever `main` points at
-          by the time they finish - a tree nothing gated.
+          own passes its own github.sha - deliberately written without
+          expression braces, because GitHub evaluates expressions in an input
+          description too and the `github` context does not exist there, which
+          makes the whole workflow unresolvable for every caller. Those jobs
+          ran on that commit, and without this the release would check out
+          whatever `main` points at by the time they finish - a tree nothing
+          gated.
         type: string
         default: ""
     outputs:
