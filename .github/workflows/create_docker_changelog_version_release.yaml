@@ -232,6 +232,18 @@ jobs:
           skip-bump: "true"
           skip-version-file: "true"
           skip-on-empty: "false"
+          # Both of these matter because `ref` above may be a commit rather
+          # than a branch, which leaves a detached HEAD: this action's `git
+          # pull` is not gated on `skip-commit` or `skip-tag`, and on a
+          # detached HEAD it fails with "You are not currently on a branch",
+          # taking the whole release with it. The pull is redundant here in
+          # any case - `fetch-depth: 0` above already fetched the full history
+          # and every tag, which is exactly what this input's own description
+          # says it is for. `git-push` is off for the same shape of reason: it
+          # is not gated on `skip-commit` either, and the commit, the tag and
+          # the push are this workflow's own job a few steps below.
+          skip-git-pull: "true"
+          git-push: "false"
 
       # Only needed when `platforms` names something the runner is not, but
       # setting it up unconditionally costs seconds and removes a conditional
