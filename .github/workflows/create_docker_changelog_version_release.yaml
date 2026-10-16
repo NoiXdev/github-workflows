@@ -98,6 +98,36 @@ on:
           gated.
         type: string
         default: ""
+      extra_image:
+        description: >
+          A second image to build and push with this same release: the Docker
+          Hub repository name under the same namespace as the main image (for
+          example `ddev-sync-endpoint`). Empty builds nothing, which is what
+          every existing caller gets. It is built from the same tree, after
+          the version has been written, with the same platforms and under the
+          same `dry_run` gate, and it carries the same tags - a product that
+          ships two images ships them as one version, and the rules that
+          decide which tags move live in one place.
+        type: string
+        default: ""
+      extra_image_dockerfile:
+        description: >
+          Path to that image's dockerfile, relative to the repository root
+          (for example `endpoint/Dockerfile`). Required when `extra_image` is
+          set.
+        type: string
+        default: ""
+      extra_image_context:
+        description: >
+          Build context for that image. The default is the repository root,
+          like the main image. Name its own directory instead when the image
+          is self-contained: the context is the build cache's key, so a
+          four-file image built from the whole repository is rebuilt by every
+          unrelated commit, and its dockerfile's COPY paths then have to be
+          written relative to the root rather than to the directory they sit
+          in.
+        type: string
+        default: "."
     outputs:
       tag:
         description: "The created release tag (e.g. v0.1.0-rc.1)"
@@ -116,6 +146,11 @@ on:
       image_digest:
         description: "Digest of the pushed image, empty on a dry run"
         value: ${{ jobs.release.outputs.image_digest }}
+      extra_image_digest:
+        description: >
+          Digest of the second image, empty on a dry run and when
+          `extra_image` was not set.
+        value: ${{ jobs.release.outputs.extra_image_digest }}
 
 permissions:
   contents: write
@@ -135,6 +170,7 @@ jobs:
       is_prerelease: ${{ steps.ver.outputs.is-prerelease }}
       release_url: ${{ steps.gh_release.outputs.url }}
       image_digest: ${{ steps.build.outputs.digest }}
+      extra_image_digest: ${{ steps.build_extra.outputs.digest }}
       notes: ${{ steps.changelog.outputs.clean_changelog }}
     steps:
       # First, so that a missing variable is named here instead of surfacing
@@ -145,11 +181,21 @@ jobs:
           DOCKERHUB_IMAGE: ${{ vars.DOCKERHUB_IMAGE }}
           DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
           DOCKERHUB_TOKEN: ${{ secrets.DOCKERHUB_TOKEN }}
+          EXTRA_IMAGE: ${{ inputs.extra_image }}
+          EXTRA_IMAGE_DOCKERFILE: ${{ inputs.extra_image_dockerfile }}
         run: |
           : "${DOCKERHUB_NAMESPACE:?Variable DOCKERHUB_NAMESPACE is not set}"
           : "${DOCKERHUB_IMAGE:?Variable DOCKERHUB_IMAGE is not set}"
           : "${DOCKERHUB_USERNAME:?Secret DOCKERHUB_USERNAME is not set}"
           : "${DOCKERHUB_TOKEN:?Secret DOCKERHUB_TOKEN is not set}"
+          # Named here for the same reason as the four above: left to the
+          # build, an empty dockerfile path surfaces as docker's own complaint
+          # a long way in - after the version has been written and the first
+          # image pushed, which is the expensive place to stop.
+          if [ -n "${EXTRA_IMAGE}" ] && [ -z "${EXTRA_IMAGE_DOCKERFILE}" ]; then
+            echo "::error::extra_image is '${EXTRA_IMAGE}' but extra_image_dockerfile is empty"
+            exit 1
+          fi
 
       - name: Checkout
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
@@ -316,6 +362,49 @@ jobs:
           sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # The second image, when the caller named one. Its own metadata step
+      # rather than one `images:` list with two entries, because the title
+      # label differs - a reader pulling either image should find its own
+      # name in it - and its own build step because the dockerfile and the
+      # context differ. Everything that decides *which* tags are produced is
+      # copied verbatim from the main image's step above, deliberately: a
+      # second image of the same product moves `latest` under the same
+      # conditions or not at all, and the gate is argued once, up there.
+      - name: Compute the tags for the second image
+        id: meta_extra
+        if: ${{ inputs.extra_image != '' }}
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: docker.io/${{ vars.DOCKERHUB_NAMESPACE }}/${{ inputs.extra_image }}
+          flavor: |
+            latest=false
+          tags: |
+            type=semver,pattern={{version}},value=${{ steps.ver.outputs.tag }}
+            type=raw,value=latest,enable=${{ inputs.prerelease == false && steps.ver.outputs.is-prerelease != 'true' }}
+            type=semver,pattern={{major}}.{{minor}},value=${{ steps.ver.outputs.tag }},enable=${{ inputs.prerelease == false && steps.ver.outputs.is-prerelease != 'true' }}
+            type=semver,pattern={{major}},value=${{ steps.ver.outputs.tag }},enable=${{ inputs.prerelease == false && steps.ver.outputs.is-prerelease != 'true' }}
+          labels: |
+            org.opencontainers.image.title=${{ inputs.extra_image }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ steps.ver.outputs.next }}
+
+      - name: Build and push the second image
+        id: build_extra
+        if: ${{ inputs.extra_image != '' }}
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: ${{ inputs.extra_image_context }}
+          file: ${{ inputs.extra_image_dockerfile }}
+          platforms: ${{ inputs.platforms }}
+          push: ${{ inputs.dry_run == false }}
+          provenance: mode=max
+          sbom: true
+          tags: ${{ steps.meta_extra.outputs.tags }}
+          labels: ${{ steps.meta_extra.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 

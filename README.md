@@ -56,6 +56,13 @@ image to Docker Hub, commits, tags, creates the release and announces it.
 Supports `prerelease_id`, `dry_run` and multi-architecture builds through
 `platforms`.
 
+A product that ships more than one image sets `extra_image` (plus
+`extra_image_dockerfile`, and `extra_image_context` when the image is
+self-contained): it is built from the same tree after the version is written,
+carries the same tags under the same conditions, and is pushed under the same
+`dry_run` gate, so two images of one product can never disagree about which
+version they are.
+
 Docker Hub is addressed through `vars.DOCKERHUB_NAMESPACE` /
 `vars.DOCKERHUB_IMAGE` and `secrets.DOCKERHUB_USERNAME` /
 `secrets.DOCKERHUB_TOKEN`, as the per-repository release workflows it

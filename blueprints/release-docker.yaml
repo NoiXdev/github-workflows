@@ -54,6 +54,14 @@ jobs:
       platforms: linux/amd64,linux/arm64
       version_file: version.json
       version_script: tools/set_version.py
+      # A product that ships a second image names it here, and it is built
+      # and pushed with this same version and the same tag rules. Give it its
+      # own directory as the context when it is self-contained - the context
+      # is the build cache's key, so a small image built from the whole
+      # repository is rebuilt by every unrelated commit.
+      # extra_image: my-product-endpoint
+      # extra_image_dockerfile: endpoint/Dockerfile
+      # extra_image_context: endpoint
       # The jobs above ran on this dispatch's commit; without this the shared
       # workflow would check out whatever `main` points at by the time they
       # finish.
