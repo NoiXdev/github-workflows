@@ -362,8 +362,12 @@ jobs:
           sbom: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Scoped per image: with `mode=max` and no scope, two builds in one
+          # job write the same cache index and each overwrites the other's, so
+          # every release would rebuild one of the two multi-architecture
+          # images from scratch under emulation.
+          cache-from: type=gha,scope=main-image
+          cache-to: type=gha,mode=max,scope=main-image
 
       # The second image, when the caller named one. Its own metadata step
       # rather than one `images:` list with two entries, because the title
@@ -405,8 +409,8 @@ jobs:
           sbom: true
           tags: ${{ steps.meta_extra.outputs.tags }}
           labels: ${{ steps.meta_extra.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=extra-image
+          cache-to: type=gha,mode=max,scope=extra-image
 
       # A dry run's whole purpose is to be read, and the version rewrite is
       # the thing most worth reading: a compose default naming a tag that was
