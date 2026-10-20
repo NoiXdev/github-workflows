@@ -105,6 +105,12 @@ on:
           tap above all, since Homebrew has no concept of a prerelease and
           `brew upgrade` would otherwise hand every user the beta.
         value: ${{ jobs.prepare.outputs.is_prerelease }}
+      dmg-sha256:
+        description: >
+          SHA-256 of the universal macOS DMG, read off the file that was
+          built and uploaded — the checksum a Homebrew cask pins. Empty when
+          macOS was not among the platforms.
+        value: ${{ jobs.build-macos.outputs.dmg_sha256 }}
 
 permissions:
   contents: write
@@ -270,6 +276,8 @@ jobs:
     needs: prepare
     if: ${{ contains(inputs.platforms, 'macos') }}
     runs-on: macos-latest
+    outputs:
+      dmg_sha256: ${{ steps.dmgsha.outputs.sha256 }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
@@ -369,6 +377,33 @@ jobs:
           projectPath: ${{ inputs.app_dir }}
           releaseId: ${{ inputs.dry_run == false && needs.prepare.outputs.release_id || '' }}
           args: --target universal-apple-darwin
+
+      # A Homebrew cask pins the checksum of the exact file it points at, so
+      # this reads the DMG that was just built and uploaded off disk rather
+      # than downloading the asset back. The repo-script path already knows
+      # the file; the tauri-action path is found where Tauri bundles it.
+      - name: Checksum the DMG
+        id: dmgsha
+        if: ${{ inputs.dry_run == false }}
+        env:
+          SCRIPT_DMG: ${{ steps.macbuild.outputs.dmg }}
+          BUNDLE_DIR: ${{ inputs.rust_workspace || inputs.tauri_dir }}/target/universal-apple-darwin/release/bundle/dmg
+        run: |
+          set -euo pipefail
+          dmg="$SCRIPT_DMG"
+          if [ -z "$dmg" ] && [ -d "$BUNDLE_DIR" ]; then
+            dmg=$(find "$BUNDLE_DIR" -maxdepth 1 -name '*.dmg' | head -n1)
+          fi
+          if [ -z "$dmg" ] || [ ! -f "$dmg" ]; then
+            # The release is already published at this point; a missing
+            # checksum only means a caller's tap bump has nothing to pin,
+            # which it reports itself.
+            echo "::warning::No DMG found to checksum (script: '$SCRIPT_DMG', bundle dir: '$BUNDLE_DIR')."
+            echo "sha256=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "Found $dmg"
+          echo "sha256=$(shasum -a 256 "$dmg" | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Clean up notarization key
         if: always()
