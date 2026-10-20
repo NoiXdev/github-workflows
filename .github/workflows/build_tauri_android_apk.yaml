@@ -64,6 +64,13 @@ jobs:
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@9fc6c4e9069bf8d3d10b2204b1fb8f6ef7065407 # v3.2.2
+        with:
+          # The action's default package list is `tools platform-tools`, and
+          # the obsolete `tools` package no longer exists in the cmdline-tools
+          # the runner image ships (16.0, observed 2026-10-20) — sdkmanager
+          # then exits 1 and the job dies before building anything. Only
+          # platform-tools is wanted here; the next step installs the rest.
+          packages: platform-tools
 
       - name: Install SDK packages (platform, build-tools, NDK)
         run: |
