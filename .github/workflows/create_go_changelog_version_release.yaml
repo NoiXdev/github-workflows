@@ -23,6 +23,17 @@ on:
           name, which is the right answer for every product so far.
         type: string
         default: ""
+    # The one secret this workflow reads besides the automatic GITHUB_TOKEN.
+    # Declared so a caller can pass exactly it instead of `secrets: inherit`,
+    # which hands a release job every secret the calling repository holds —
+    # registry credentials included — though nothing here needs them.
+    # Optional: without it the announcement is skipped by its own
+    # continue-on-error, and the release itself is unaffected. A caller that
+    # still passes `inherit` keeps working.
+    secrets:
+      DISCORD_WEBHOOK_RELEASE_NOTIFICATION:
+        description: Discord webhook the release is announced to.
+        required: false
 
 jobs:
   release:

@@ -29,4 +29,8 @@ jobs:
   release:
     if: ${{ github.event.workflow_run.conclusion == 'success' }}
     uses: NoiXdev/github-workflows/.github/workflows/create_go_changelog_version_release.yaml@main
-    secrets: inherit
+    # Only what the workflow reads, never `inherit`: a release job has no
+    # use for the repository's other secrets (registry credentials, signing
+    # keys), so it should not hold them either.
+    secrets:
+      DISCORD_WEBHOOK_RELEASE_NOTIFICATION: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}

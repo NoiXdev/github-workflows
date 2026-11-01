@@ -18,6 +18,12 @@ branch rather than on a push or a tag. That is what makes "only the
 default branch" and "only a green commit" true by construction instead of
 by a check someone has to write and keep correct.
 
+The workflow declares the one secret it reads,
+`DISCORD_WEBHOOK_RELEASE_NOTIFICATION` (optional), so the blueprint passes
+exactly that instead of `secrets: inherit`. `inherit` hands the release job
+every secret of the calling repository — its registry credentials too —
+and a job should not hold what it does not use.
+
 ## Pinned actions
 
 Every third-party action is pinned to a full commit SHA, with the version
