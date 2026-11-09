@@ -63,7 +63,7 @@ carries the same tags under the same conditions, and is pushed under the same
 `dry_run` gate, so two images of one product can never disagree about which
 version they are.
 
-Three more inputs are opt-in and change nothing while empty:
+Two more inputs are opt-in and change nothing while empty:
 
 - `dockerfile` names the main image's dockerfile when it is not `Dockerfile`
   at the root.
@@ -71,10 +71,6 @@ Three more inputs are opt-in and change nothing while empty:
   (`VERSION=v1.2.0`), passed to both images: for a product whose binaries take
   their version at build time, such as a Go binary built with
   `-ldflags "-X main.version=..."`.
-- `harbor_namespace` pushes both images to the organization's Harbor
-  (`harbor.cloud.noidee.dev/<namespace>/<image>`) as well, under the same tags
-  as on Docker Hub; it needs the secrets `HARBOR_USERNAME` and
-  `HARBOR_PASSWORD`.
 
 Docker Hub is addressed through `vars.DOCKERHUB_NAMESPACE` /
 `vars.DOCKERHUB_IMAGE` and `secrets.DOCKERHUB_USERNAME` /
