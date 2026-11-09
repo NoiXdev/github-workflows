@@ -198,7 +198,7 @@ jobs:
       release_url: ${{ steps.gh_release.outputs.url }}
       image_digest: ${{ steps.build.outputs.digest }}
       extra_image_digest: ${{ steps.build_extra.outputs.digest }}
-      notes: ${{ steps.changelog.outputs.clean_changelog }}
+      notes: ${{ steps.notes.outputs.notes }}
     steps:
       # First, so that a missing variable is named here instead of surfacing
       # as an authentication error from the registry halfway through.
@@ -330,6 +330,38 @@ jobs:
           # the push are this workflow's own job a few steps below.
           skip-git-pull: "true"
           git-push: "false"
+
+      # The release notes, capped. A first release covers the whole history,
+      # and a long one produces notes larger than both a GitHub release body
+      # (125 000 characters) and a single value the runner can hand to an
+      # action (about 128 KiB) - the release step then failed with "Argument
+      # list too long" after the images, the commit and the tag were already
+      # out. So the notes are read from the CHANGELOG.md just written, never
+      # passed through the environment, and cut at a line boundary under
+      # 60 000 bytes with a pointer to the full changelog at the tag.
+      - name: Cap the release notes
+        id: notes
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          limit=60000
+          # The newest section: from the first "## " heading to the next.
+          awk 'NR > 1 && /^## / { exit } { print }' CHANGELOG.md > "${RUNNER_TEMP}/notes.md"
+          if [ "$(wc -c < "${RUNNER_TEMP}/notes.md")" -gt "${limit}" ]; then
+            head -c "${limit}" "${RUNNER_TEMP}/notes.md" | sed '$d' > "${RUNNER_TEMP}/notes.cut"
+            {
+              cat "${RUNNER_TEMP}/notes.cut"
+              echo ""
+              echo "... more than a release description can hold; the full list is in [CHANGELOG.md](${REPO_URL}/blob/${TAG}/CHANGELOG.md)."
+            } > "${RUNNER_TEMP}/notes.md"
+          fi
+          {
+            echo "notes<<NOTES_EOF_${GITHUB_RUN_ID}"
+            cat "${RUNNER_TEMP}/notes.md"
+            echo "NOTES_EOF_${GITHUB_RUN_ID}"
+          } >> "$GITHUB_OUTPUT"
 
       # Only needed when `platforms` names something the runner is not, but
       # setting it up unconditionally costs seconds and removes a conditional
@@ -530,7 +562,7 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag_name: ${{ steps.ver.outputs.tag }}
           name: ${{ steps.ver.outputs.tag }}
-          body: ${{ steps.changelog.outputs.clean_changelog }}
+          body_path: ${{ runner.temp }}/notes.md
           # Either the caller asked for it, or the version says so. Derived
           # rather than trusted, so a release cannot be marked final while
           # carrying a candidate version.
