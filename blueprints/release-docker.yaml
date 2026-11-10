@@ -66,4 +66,7 @@ jobs:
       # workflow would check out whatever `main` points at by the time they
       # finish.
       ref: ${{ github.sha }}
+      # The environment whose rules gate the release and whose secrets only
+      # the release jobs receive; see "Release protection" in the README.
+      environment: release
     secrets: inherit

@@ -17,6 +17,16 @@ name: Create Go Changelog + Version + Release
 on:
   workflow_call:
     inputs:
+      environment:
+        description: >
+          GitHub environment that every job holding a secret or pushing runs
+          in, for example `release`. Its protection rules - deployment
+          branches and tags, required reviewers, a wait timer - then gate the
+          release, and secrets stored on that environment reach only those
+          jobs. Empty runs without one, which is what every existing caller
+          gets.
+        type: string
+        default: ""
       product_name:
         description: >
           Name shown in the release notification. Empty uses the repository
@@ -27,6 +37,7 @@ on:
 jobs:
   release:
     name: Create Go Changelog + Version + Release
+    environment: ${{ inputs.environment }}
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
