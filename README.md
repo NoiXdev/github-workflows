@@ -40,6 +40,45 @@ The three `NoiXdev/github-workflows/actions/...@main` self-references are
 deliberately still floating: a repository pinning itself turns every
 change into a two-step dance, and the sensible answer is a release tag
 for this repository — a decision for its owner, not one to invent here.
+The same holds for the callers: product repositories reference these
+workflows by `@main` (or a release tag of this repository once there is
+one), never by commit, so that a change here does not have to be rolled out
+to every product by hand.
+
+## Release protection
+
+Every release workflow takes an `environment` input. Set it, and every job
+that holds a secret or pushes (the release job, the platform builds, the
+announcement) runs in that GitHub environment. Left empty, the jobs run
+without one, which is what every existing caller gets.
+
+The input is only half of the protection; the environment itself, in the
+product repository's settings, carries the other half:
+
+- **Deployment branches and tags:** allow only the branch a release is
+  started from (`main` for a dispatched release; the default branch the CI
+  run completed on for the Go blueprint). A workflow pushed to any other
+  branch then cannot enter the environment at all.
+- **Environment secrets:** store the registry, signing and webhook
+  credentials on the environment rather than on the repository or the
+  organization. A secret on the organization or the repository reaches every
+  workflow on every branch of that repository; a secret on the environment
+  reaches only jobs that entered it, which the branch rule above limits to
+  the release. An organization secret shared with other products stays
+  where it is, but drop the product repository from its selected
+  repositories once its environment has its own copy.
+- **Required reviewers** (optional): every release then waits for a click.
+  Turn on "Prevent self-review" only when more than one person can approve.
+
+```yaml
+jobs:
+  release:
+    uses: NoiXdev/github-workflows/.github/workflows/create_docker_changelog_version_release.yaml@main
+    with:
+      bump: ${{ inputs.bump }}
+      environment: release
+    secrets: inherit
+```
 
 ## Workflow Documentation
 

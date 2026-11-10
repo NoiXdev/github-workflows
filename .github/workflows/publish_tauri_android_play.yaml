@@ -21,6 +21,16 @@ name: Publish Tauri Android to Google Play
 on:
   workflow_call:
     inputs:
+      environment:
+        description: >
+          GitHub environment that every job holding a secret or pushing runs
+          in, for example `release`. Its protection rules - deployment
+          branches and tags, required reviewers, a wait timer - then gate the
+          release, and secrets stored on that environment reach only those
+          jobs. Empty runs without one, which is what every existing caller
+          gets.
+        type: string
+        default: ""
       package_name:
         description: "Android applicationId / Play package name"
         type: string
@@ -72,6 +82,7 @@ permissions:
 jobs:
   play:
     name: Publish AAB to Play (${{ inputs.track }})
+    environment: ${{ inputs.environment }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0

@@ -23,6 +23,16 @@ name: Create Docker Changelog + Version + Release
 on:
   workflow_call:
     inputs:
+      environment:
+        description: >
+          GitHub environment that every job holding a secret or pushing runs
+          in, for example `release`. Its protection rules - deployment
+          branches and tags, required reviewers, a wait timer - then gate the
+          release, and secrets stored on that environment reach only those
+          jobs. Empty runs without one, which is what every existing caller
+          gets.
+        type: string
+        default: ""
       bump:
         description: "Version bump: patch, minor or major"
         required: true
@@ -174,6 +184,7 @@ permissions:
 jobs:
   release:
     name: Create Docker Changelog + Version + Release
+    environment: ${{ inputs.environment }}
     runs-on: ubuntu-latest
     # A multi-architecture build under emulation is the slow part; the default
     # six hours would hold a runner for a whole working day if it hung.
@@ -564,6 +575,7 @@ jobs:
 
   announce:
     name: Announce the release
+    environment: ${{ inputs.environment }}
     needs: [release]
     # No `always()`: when the release job fails nothing shipped, so a skipped
     # announcement is the correct outcome. Dry runs create no release either.

@@ -17,6 +17,16 @@ name: Create Tauri Changelog + Version + Release
 on:
   workflow_call:
     inputs:
+      environment:
+        description: >
+          GitHub environment that every job holding a secret or pushing runs
+          in, for example `release`. Its protection rules - deployment
+          branches and tags, required reviewers, a wait timer - then gate the
+          release, and secrets stored on that environment reach only those
+          jobs. Empty runs without one, which is what every existing caller
+          gets.
+        type: string
+        default: ""
       bump:
         description: "Version bump: patch, minor or major"
         required: true
@@ -118,6 +128,7 @@ permissions:
 jobs:
   prepare:
     name: Prepare version & release
+    environment: ${{ inputs.environment }}
     runs-on: ubuntu-latest
     outputs:
       next: ${{ steps.ver.outputs.next }}
@@ -215,6 +226,7 @@ jobs:
 
   build:
     name: Build ${{ matrix.name }}
+    environment: ${{ inputs.environment }}
     needs: prepare
     if: ${{ contains(inputs.platforms, 'windows') || contains(inputs.platforms, 'linux') }}
     strategy:
@@ -273,6 +285,7 @@ jobs:
 
   build-macos:
     name: Build macOS (Universal)
+    environment: ${{ inputs.environment }}
     needs: prepare
     if: ${{ contains(inputs.platforms, 'macos') }}
     runs-on: macos-latest
@@ -411,6 +424,7 @@ jobs:
 
   announce:
     name: Announce the release
+    environment: ${{ inputs.environment }}
     needs: [prepare, build, build-macos]
     # `always()` so a skipped platform job does not suppress the notice, but
     # only when a release was actually created.
