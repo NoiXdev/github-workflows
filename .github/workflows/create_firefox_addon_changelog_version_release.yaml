@@ -399,15 +399,20 @@ jobs:
         run: |
           set -euo pipefail
           git add -A
+          refs=("refs/tags/${TAG}")
           if git diff --staged --quiet; then
             echo "Nothing to commit."
           else
             # [skip ci] so the release commit does not start another CI run.
             git commit -m "chore(release): ${TAG} [skip ci]"
-            git push origin HEAD:main
+            refs=("HEAD:refs/heads/main" "${refs[@]}")
           fi
           git tag -a "${TAG}" -m "${TAG}"
-          git push origin "${TAG}"
+          # One atomic push for the commit and the tag. Pushed separately, the
+          # tag push right after the commit push was rejected by GitHub with
+          # "missing necessary objects", leaving a release commit on main with
+          # no tag; atomically, both land or neither does.
+          git push --atomic origin "${refs[@]}"
 
       - name: Create the GitHub release
         id: gh_release
