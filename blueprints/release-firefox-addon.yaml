@@ -1,0 +1,58 @@
+name: Release
+run-name: Release ${{ inputs.bump }}${{ inputs.dry_run && ' (dry run)' || '' }}
+
+# Dispatch-driven, like the other release blueprints: trigger it from the
+# Actions tab and pick the bump. The extension is linted, built, submitted to
+# addons.mozilla.org, and the release commit, tag and GitHub release follow.
+#
+# Needs the secrets MOZILLA_WEB_EXT_API_KEY and MOZILLA_WEB_EXT_API_SECRET
+# (an AMO API key, https://addons.mozilla.org/developers/addon/api/key/),
+# ideally on the `release` environment - see "Release protection" in the
+# README.
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version bump type"
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Lint and build, submit and push nothing"
+        type: boolean
+        default: false
+
+concurrency: release
+
+permissions:
+  contents: write
+
+jobs:
+
+  gates:
+    # The workflow named here must itself declare a `workflow_call` trigger,
+    # or the call fails to resolve.
+    if: ${{ github.ref == 'refs/heads/main' }}
+    uses: ./.github/workflows/ci.yaml
+
+  release:
+    needs: [gates]
+    uses: NoiXdev/github-workflows/.github/workflows/create_firefox_addon_changelog_version_release.yaml@main
+    with:
+      bump: ${{ inputs.bump }}
+      dry_run: ${{ inputs.dry_run }}
+      # The directory holding manifest.json; only it is packaged.
+      source_dir: extension
+      version_file: extension/manifest.json
+      # `listed` publishes on addons.mozilla.org; `unlisted` only signs the
+      # .xpi for self-distribution and attaches it to the GitHub release.
+      channel: listed
+      # Listing texts for the store page; required for the first listed
+      # submission of a new add-on.
+      amo_metadata: amo-metadata.json
+      ref: ${{ github.sha }}
+      environment: release
+    secrets: inherit

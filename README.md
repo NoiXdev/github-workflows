@@ -142,6 +142,29 @@ macOS build (e.g. an embedded WidgetKit extension), pass `macos_build_script` po
 a repo script that builds/signs/notarizes and prints `DMG=<path>`.
 See the blueprint for how to use it [here](./blueprints/release-tauri.yaml).
 
+#### [Create Firefox Add-on Changelog + Version + Release](./.github/workflows/create_firefox_addon_changelog_version_release.yaml)
+
+A dispatch-driven release for a Firefox extension published on
+addons.mozilla.org (AMO). It computes the next version, writes it into the
+extension's `manifest.json`, lints and builds the extension with a pinned
+`web-ext`, submits it to AMO, then commits, tags, creates the release and
+announces it. Supports `dry_run`; there is no prerelease input, because
+Firefox only accepts versions made of dot-separated numbers.
+
+- `source_dir` names the directory holding `manifest.json`; only it is
+  packaged. The manifest must carry `browser_specific_settings.gecko.id`.
+- `channel` is `listed` (public on AMO, installed everywhere through Firefox
+  Sync) or `unlisted` (signed for self-distribution). A listed submission does
+  not wait for Mozilla's review; an unlisted one waits for the automatic
+  signature and attaches the signed `.xpi` to the GitHub release.
+- `amo_metadata` points at a JSON file with the listing texts, which AMO
+  requires for the first listed submission of a new add-on.
+
+AMO is addressed through `secrets.MOZILLA_WEB_EXT_API_KEY` /
+`secrets.MOZILLA_WEB_EXT_API_SECRET`, read without being declared, so a caller
+has to pass `secrets: inherit`.
+See the blueprint for how to use it [here](./blueprints/release-firefox-addon.yaml).
+
 ### Composite actions
 
 - [`compute-version`](./actions/compute-version) — compute the next semver from a bump type + `package.json`, failing if the tag exists.

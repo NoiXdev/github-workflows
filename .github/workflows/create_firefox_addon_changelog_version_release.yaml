@@ -1,0 +1,471 @@
+name: Create Firefox Add-on Changelog + Version + Release
+
+# Reusable, dispatch-driven release for a Firefox extension published on
+# addons.mozilla.org (AMO). The caller picks a bump; this workflow computes the
+# next version, writes it into the manifest, lints and builds the extension,
+# submits it to AMO, commits, tags, releases and announces.
+#
+# Three things are worth knowing before changing the order of the steps.
+#
+# The extension is built AFTER the version is written, because AMO reads the
+# version from the manifest inside the package, and a package claiming the
+# previous version is rejected as a duplicate.
+#
+# The submission to AMO happens BEFORE the commit and the tag, for the reason
+# the Docker workflow gives for its image push: neither order is atomic, and a
+# submitted version whose release failed can be followed up by hand, while a
+# pushed git tag whose submission failed is a public tag for a version that
+# does not exist on AMO - and AMO never accepts the same version twice, so the
+# next attempt has to be a new version anyway.
+#
+# A listed (public) submission does not wait for approval. A new listed add-on
+# usually goes through a human review that takes longer than any runner should
+# be held, and web-ext fails the job when its approval wait times out - after
+# the version was already submitted. An unlisted (self-distributed) submission
+# is signed automatically within minutes, so it waits and the signed .xpi is
+# attached to the GitHub release.
+#
+# There is no prerelease input, unlike the other release workflows: Firefox
+# only accepts versions made of dot-separated numbers, so a candidate such as
+# 0.1.0-rc.1 would be rejected by AMO after everything before it had run.
+on:
+  workflow_call:
+    inputs:
+      environment:
+        description: >
+          GitHub environment that every job holding a secret or pushing runs
+          in, for example `release`. See "Release protection" in the README.
+          Empty runs without one.
+        type: string
+        default: ""
+      bump:
+        description: "Version bump: patch, minor or major"
+        required: true
+        type: string
+      dry_run:
+        description: >
+          Lint and build everything but submit and push nothing: no AMO
+          submission, no commit, no tag, no release. It still validates that
+          the AMO credentials are configured, so a missing secret is caught by
+          the rehearsal.
+        type: boolean
+        default: false
+      source_dir:
+        description: >
+          Directory holding the extension's manifest.json, relative to the
+          repository root. Only this directory is packaged.
+        type: string
+        default: "."
+      version_file:
+        description: >
+          JSON file holding the current version, normally the extension's
+          manifest.json. It is rewritten with `JSON.stringify(data, null, 2)`,
+          so a manifest indented differently comes back two-space indented.
+        type: string
+        default: manifest.json
+      version_script:
+        description: >
+          Executable in the repository, invoked as `./<script> <version>`,
+          that writes the version into every other file naming one. Empty
+          means only `version_file` is written.
+        type: string
+        default: ""
+      channel:
+        description: >
+          AMO channel: `listed` publishes on addons.mozilla.org (and lets
+          Firefox Sync install it on every device), `unlisted` only signs it
+          for self-distribution.
+        type: string
+        default: listed
+      amo_metadata:
+        description: >
+          JSON file with listing metadata (summary, description, categories,
+          license, ...), passed to `web-ext sign --amo-metadata`. Required by
+          AMO for the first listed submission of a new add-on; later
+          submissions update the listing with it. Empty sends none.
+        type: string
+        default: ""
+      approval_timeout:
+        description: >
+          Milliseconds to wait for AMO's approval and download the signed
+          .xpi. Empty picks by channel: 0 (do not wait) for `listed`,
+          900000 (15 minutes) for `unlisted`.
+        type: string
+        default: ""
+      web_ext_version:
+        description: >
+          Exact web-ext version run through npx. Pinned for the reason the
+          README gives for pinned actions.
+        type: string
+        default: "8.10.0"
+      node_version:
+        description: "Node.js version used to run web-ext"
+        type: string
+        default: "22"
+      product_name:
+        description: >
+          Name shown in the release notification. Empty uses the repository
+          name.
+        type: string
+        default: ""
+      ref:
+        description: >
+          The commit or ref to release. Empty uses `main`. A caller that gates
+          the release on jobs of its own passes its own github.sha (see the
+          Docker workflow's description of this input for why).
+        type: string
+        default: ""
+    outputs:
+      tag:
+        description: "The created release tag (e.g. v0.1.0)"
+        value: ${{ jobs.release.outputs.tag }}
+      version:
+        description: "The released version, without the leading v"
+        value: ${{ jobs.release.outputs.version }}
+      release_url:
+        description: "URL of the GitHub release, empty on a dry run"
+        value: ${{ jobs.release.outputs.release_url }}
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Create Firefox Add-on Changelog + Version + Release
+    environment: ${{ inputs.environment }}
+    runs-on: ubuntu-latest
+    # Validation on AMO usually takes a minute; an unlisted submission adds
+    # the approval wait on top. Anything beyond this is a hang.
+    timeout-minutes: 45
+    outputs:
+      tag: ${{ steps.ver.outputs.tag }}
+      version: ${{ steps.ver.outputs.next }}
+      release_url: ${{ steps.gh_release.outputs.url }}
+      notes: ${{ steps.notes.outputs.notes }}
+    steps:
+      # First, so that a missing secret or a typo in an input is named here
+      # instead of surfacing halfway through, after the version was written.
+      - name: Validate the AMO configuration
+        env:
+          MOZILLA_WEB_EXT_API_KEY: ${{ secrets.MOZILLA_WEB_EXT_API_KEY }}
+          MOZILLA_WEB_EXT_API_SECRET: ${{ secrets.MOZILLA_WEB_EXT_API_SECRET }}
+          CHANNEL: ${{ inputs.channel }}
+          APPROVAL_TIMEOUT: ${{ inputs.approval_timeout }}
+        run: |
+          : "${MOZILLA_WEB_EXT_API_KEY:?Secret MOZILLA_WEB_EXT_API_KEY is not set}"
+          : "${MOZILLA_WEB_EXT_API_SECRET:?Secret MOZILLA_WEB_EXT_API_SECRET is not set}"
+          case "${CHANNEL}" in
+            listed|unlisted) ;;
+            *) echo "::error::channel is '${CHANNEL}', expected listed or unlisted"; exit 1 ;;
+          esac
+          if [ -n "${APPROVAL_TIMEOUT}" ] && [[ ! "${APPROVAL_TIMEOUT}" =~ ^[0-9]+$ ]]; then
+            echo "::error::approval_timeout is '${APPROVAL_TIMEOUT}', expected milliseconds"
+            exit 1
+          fi
+
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          # The changelog is built from the commits since the last tag.
+          fetch-depth: 0
+          ref: ${{ inputs.ref || 'main' }}
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ inputs.node_version }}
+
+      - name: Validate the source directory
+        env:
+          SOURCE_DIR: ${{ inputs.source_dir }}
+          AMO_METADATA: ${{ inputs.amo_metadata }}
+        run: |
+          set -euo pipefail
+          if [ ! -f "${SOURCE_DIR}/manifest.json" ]; then
+            echo "::error::${SOURCE_DIR}/manifest.json does not exist (check source_dir)"
+            exit 1
+          fi
+          # Without an ID in the manifest, AMO would generate one on the first
+          # submission and every later submission would create a new add-on.
+          id="$(node -p "const m = require('./' + process.env.SOURCE_DIR + '/manifest.json'); (m.browser_specific_settings || m.applications || {}).gecko?.id || ''")"
+          if [ -z "${id}" ]; then
+            echo "::error::${SOURCE_DIR}/manifest.json has no browser_specific_settings.gecko.id"
+            exit 1
+          fi
+          if [ -n "${AMO_METADATA}" ]; then
+            node -e 'JSON.parse(require("fs").readFileSync(process.env.AMO_METADATA, "utf8"))' \
+              || { echo "::error::${AMO_METADATA} is not valid JSON"; exit 1; }
+          fi
+          echo "Add-on ID: ${id}"
+
+      - name: Compute the next version
+        id: ver
+        # Deliberately unpinned: this repository's own action, see the README.
+        uses: NoiXdev/github-workflows/actions/compute-version@main
+        with:
+          bump: ${{ inputs.bump }}
+          version-file: ${{ inputs.version_file }}
+
+      # Through the environment rather than interpolated into the script text:
+      # `${{ }}` is substituted before bash sees the line.
+      - name: Write the version into the version file
+        env:
+          VERSION_FILE: ${{ inputs.version_file }}
+          VERSION: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          node -e '
+            const fs = require("fs");
+            const file = process.env.VERSION_FILE;
+            const data = JSON.parse(fs.readFileSync(file, "utf8"));
+            data.version = process.env.VERSION;
+            fs.writeFileSync(file, JSON.stringify(data, null, 2) + "\n");
+          '
+
+      - name: Write the version everywhere else
+        if: ${{ inputs.version_script != '' }}
+        env:
+          VERSION_SCRIPT: ${{ inputs.version_script }}
+          VERSION: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          if [ ! -x "./${VERSION_SCRIPT}" ]; then
+            echo "::error::${VERSION_SCRIPT} is not an executable file in this repository"
+            exit 1
+          fi
+          "./${VERSION_SCRIPT}" "${VERSION}"
+
+      # Checks the manifest that is actually packaged, which is not
+      # necessarily `version_file`.
+      - name: Verify the version is in sync
+        env:
+          SOURCE_DIR: ${{ inputs.source_dir }}
+          VERSION: ${{ steps.ver.outputs.next }}
+        run: |
+          set -euo pipefail
+          have="$(node -p "require('./' + process.env.SOURCE_DIR + '/manifest.json').version")"
+          if [ "${have}" != "${VERSION}" ]; then
+            echo "::error::${SOURCE_DIR}/manifest.json says ${have}, the release is ${VERSION}"
+            exit 1
+          fi
+          echo "${SOURCE_DIR}/manifest.json says ${have} - in sync"
+
+      - name: Generate CHANGELOG.md
+        id: changelog
+        # Same configuration as the Docker workflow, which explains each line:
+        # text only, the version comes from `compute-version`.
+        uses: TriPSs/conventional-changelog-action@ee43def3241429afddab215ba89090cbf64fb45c # v6.4.0
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          preset: conventionalcommits
+          tag-prefix: "v"
+          output-file: CHANGELOG.md
+          release-count: 0
+          skip-commit: "true"
+          skip-tag: "true"
+          skip-bump: "true"
+          skip-version-file: "true"
+          skip-on-empty: "false"
+          fallback-version: ${{ steps.ver.outputs.next }}
+          skip-git-pull: "true"
+          git-push: "false"
+
+      # Capped for the reason the Docker workflow gives: a first release
+      # covers the whole history and can exceed what a release body holds.
+      - name: Cap the release notes
+        id: notes
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}
+        run: |
+          set -euo pipefail
+          limit=60000
+          awk 'NR > 1 && /^## / { exit } { print }' CHANGELOG.md > "${RUNNER_TEMP}/notes.md"
+          if [ "$(wc -c < "${RUNNER_TEMP}/notes.md")" -gt "${limit}" ]; then
+            head -c "${limit}" "${RUNNER_TEMP}/notes.md" | sed '$d' > "${RUNNER_TEMP}/notes.cut"
+            {
+              cat "${RUNNER_TEMP}/notes.cut"
+              echo ""
+              echo "... more than a release description can hold; the full list is in [CHANGELOG.md](${REPO_URL}/blob/${TAG}/CHANGELOG.md)."
+            } > "${RUNNER_TEMP}/notes.md"
+          fi
+          {
+            echo "notes<<NOTES_EOF_${GITHUB_RUN_ID}"
+            cat "${RUNNER_TEMP}/notes.md"
+            echo "NOTES_EOF_${GITHUB_RUN_ID}"
+          } >> "$GITHUB_OUTPUT"
+
+      # Outside the checkout, so the `git add -A` below cannot pick up
+      # packages, and the product's own web-ext config cannot redirect them.
+      - name: Prepare the artifacts directory
+        run: mkdir -p "${RUNNER_TEMP}/web-ext-artifacts"
+
+      - name: Lint the extension
+        env:
+          SOURCE_DIR: ${{ inputs.source_dir }}
+          WEB_EXT_VERSION: ${{ inputs.web_ext_version }}
+        run: npx --yes "web-ext@${WEB_EXT_VERSION}" lint --source-dir "${SOURCE_DIR}"
+
+      - name: Build the extension
+        env:
+          SOURCE_DIR: ${{ inputs.source_dir }}
+          WEB_EXT_VERSION: ${{ inputs.web_ext_version }}
+        run: |
+          npx --yes "web-ext@${WEB_EXT_VERSION}" build \
+            --source-dir "${SOURCE_DIR}" \
+            --artifacts-dir "${RUNNER_TEMP}/web-ext-artifacts" \
+            --overwrite-dest
+
+      - name: Submit to addons.mozilla.org
+        if: ${{ inputs.dry_run == false }}
+        env:
+          # web-ext reads its credentials from these two variables, which keeps
+          # them out of the command line and the process list.
+          WEB_EXT_API_KEY: ${{ secrets.MOZILLA_WEB_EXT_API_KEY }}
+          WEB_EXT_API_SECRET: ${{ secrets.MOZILLA_WEB_EXT_API_SECRET }}
+          SOURCE_DIR: ${{ inputs.source_dir }}
+          CHANNEL: ${{ inputs.channel }}
+          AMO_METADATA: ${{ inputs.amo_metadata }}
+          APPROVAL_TIMEOUT: ${{ inputs.approval_timeout }}
+          WEB_EXT_VERSION: ${{ inputs.web_ext_version }}
+        run: |
+          set -euo pipefail
+          timeout="${APPROVAL_TIMEOUT}"
+          if [ -z "${timeout}" ]; then
+            if [ "${CHANNEL}" = "listed" ]; then timeout=0; else timeout=900000; fi
+          fi
+          args=(
+            --source-dir "${SOURCE_DIR}"
+            --artifacts-dir "${RUNNER_TEMP}/web-ext-artifacts"
+            --channel "${CHANNEL}"
+            --approval-timeout "${timeout}"
+          )
+          if [ -n "${AMO_METADATA}" ]; then
+            args+=(--amo-metadata "${AMO_METADATA}")
+          fi
+          npx --yes "web-ext@${WEB_EXT_VERSION}" sign "${args[@]}"
+          # web-ext remembers the upload in the working directory; it must not
+          # end up in the release commit below.
+          rm -f .amo-upload-uuid "${SOURCE_DIR}/.amo-upload-uuid" .web-extension-id "${SOURCE_DIR}/.web-extension-id"
+
+      - name: Show what the rehearsal changed
+        if: ${{ inputs.dry_run }}
+        run: |
+          set -euo pipefail
+          {
+            echo "### Dry run - nothing was submitted or pushed"
+            echo ""
+            echo "No AMO submission, no commit, no tag, no release, no announcement."
+            echo ""
+            echo "Built packages:"
+            echo '```'
+            ls -l "${RUNNER_TEMP}/web-ext-artifacts"
+            echo '```'
+            echo ""
+            echo "Files the rehearsal touched, tracked and untracked:"
+            echo '```'
+            git status --short
+            echo '```'
+            echo ""
+            echo "<details><summary>Full diff</summary>"
+            echo ""
+            echo '```diff'
+            git diff
+            echo '```'
+            echo ""
+            echo "</details>"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ -f CHANGELOG.md ]; then
+            {
+              echo "<details><summary>CHANGELOG.md, first 40 lines</summary>"
+              echo ""
+              echo '```markdown'
+              head -40 CHANGELOG.md
+              echo '```'
+              echo ""
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Commit the version and the changelog, then tag
+        if: ${{ inputs.dry_run == false }}
+        env:
+          GIT_AUTHOR_NAME: noix-dev-bot
+          GIT_AUTHOR_EMAIL: noix-dev-bot@noix.dev
+          GIT_COMMITTER_NAME: noix-dev-bot
+          GIT_COMMITTER_EMAIL: noix-dev-bot@noix.dev
+          TAG: ${{ steps.ver.outputs.tag }}
+        run: |
+          set -euo pipefail
+          git add -A
+          if git diff --staged --quiet; then
+            echo "Nothing to commit."
+          else
+            # [skip ci] so the release commit does not start another CI run.
+            git commit -m "chore(release): ${TAG} [skip ci]"
+            git push origin HEAD:main
+          fi
+          git tag -a "${TAG}" -m "${TAG}"
+          git push origin "${TAG}"
+
+      - name: Create the GitHub release
+        id: gh_release
+        if: ${{ inputs.dry_run == false }}
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2.6.2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag_name: ${{ steps.ver.outputs.tag }}
+          name: ${{ steps.ver.outputs.tag }}
+          body_path: ${{ runner.temp }}/notes.md
+          # The unsigned package always; the signed .xpi when the channel
+          # waited for it (unlisted).
+          files: |
+            ${{ runner.temp }}/web-ext-artifacts/*.zip
+            ${{ runner.temp }}/web-ext-artifacts/*.xpi
+
+      - name: Summary
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          PREVIOUS: ${{ steps.ver.outputs.current }}
+          NEXT: ${{ steps.ver.outputs.next }}
+          BUMP: ${{ inputs.bump }}
+          CHANNEL: ${{ inputs.channel }}
+          DRY_RUN: ${{ inputs.dry_run }}
+        run: |
+          {
+            echo "### Release ${TAG}"
+            echo ""
+            echo "| Field | Value |"
+            echo "| --- | --- |"
+            echo "| Previous version | \`${PREVIOUS}\` |"
+            echo "| New version | \`${NEXT}\` |"
+            echo "| Bump type | \`${BUMP}\` |"
+            echo "| AMO channel | \`${CHANNEL}\` |"
+            echo "| Dry run | \`${DRY_RUN}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"
+          if [ "${DRY_RUN}" = "false" ] && [ "${CHANNEL}" = "listed" ]; then
+            {
+              echo ""
+              echo "The version was submitted to addons.mozilla.org. It appears in"
+              echo "the store once Mozilla's review has approved it."
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+  announce:
+    name: Announce the release
+    environment: ${{ inputs.environment }}
+    needs: [release]
+    if: ${{ inputs.dry_run == false }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Post to Discord
+        # A notification must never fail the release.
+        continue-on-error: true
+        uses: NoiXdev/github-workflows/actions/announce-release@main
+        with:
+          webhook: ${{ secrets.DISCORD_WEBHOOK_RELEASE_NOTIFICATION }}
+          tag: ${{ needs.release.outputs.tag }}
+          body: ${{ needs.release.outputs.notes }}
+          url: ${{ needs.release.outputs.release_url }}
+          product-name: ${{ inputs.product_name }}
